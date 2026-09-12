@@ -1,170 +1,313 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body.
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-
+#include "serial_monitor.h"
 #include "main.h"
+#include "supervisor.h"
+#include "alarm.h"
+#include "bme280.h"
+#include "bno055.h"
+#include "pca9685.h"
+#include "countdown.h"
+#include "logger.h"
+#include "flight.h"
+#include "watchdog.h"
+#include "telemetry.h"
+#include "stabilization.h"
+#include "uplink.h"
+#include "status_report.h"
+#include "orientation.h"
+#include "gps.h"
 
 I2C_HandleTypeDef hi2c1;
 SPI_HandleTypeDef hspi1;
+TIM_HandleTypeDef htim6;
 
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_TIM6_Init(void);
+
+static void demo_read_sensors(void)
+{
+    float t = 0, h = 0, p = 0;
+    if (bme280_read(&t, &h, &p) == 0)
+    {
+        serial_puts("bme280: ");
+        print_unsigned((unsigned int)t);
+        serial_puts(" C, ");
+        print_unsigned((unsigned int)h);
+        serial_puts(" %, ");
+        print_unsigned((unsigned int)p);
+        serial_puts(" hPa\r\n");
+    }
+
+    int16_t acc[3], gyr[3], mag[3];
+    if (bno055_read(acc, gyr, mag) == 0)
+    {
+        serial_puts("bno055: acc=");
+        print_int(acc[0]);
+        serial_puts(",");
+        print_int(acc[1]);
+        serial_puts(",");
+        print_int(acc[2]);
+        serial_puts(" mg gyr=");
+        print_int(gyr[0]);
+        serial_puts(",");
+        print_int(gyr[1]);
+        serial_puts(",");
+        print_int(gyr[2]);
+        serial_puts(" dps\r\n");
+        bno055_diag();
+    }
+}
 
 int main(void)
 {
-  HAL_Init();
-  SystemClock_Config();
-  MX_GPIO_Init();
-  MX_I2C1_Init();
-  MX_SPI1_Init();
+    /* Capture reset cause before peripheral initialization can clear it. */
+    uint32_t rst_cause = RCC->RSR;
 
-  while (1)
-  {
-  }
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_I2C1_Init();
+    MX_SPI1_Init();
+    MX_TIM6_Init();
+    alarm_init();
+    serial_init();
+
+    serial_puts("\r\nCassiopeia v0.9 (flight software)\r\n");
+
+    serial_puts("rst: ");
+    if (rst_cause & RCC_RSR_IWDG1RSTF) { serial_puts("IWDG"); }
+    if (rst_cause & RCC_RSR_WWDG1RSTF) { serial_puts("WWDG"); }
+    if (rst_cause & RCC_RSR_SFTRSTF)   { serial_puts("SOFT"); }
+    if (rst_cause & RCC_RSR_PINRSTF)   { serial_puts("PIN"); }
+    if (rst_cause & RCC_RSR_BORRSTF)   { serial_puts("BOR"); }
+    if (rst_cause & RCC_RSR_PORRSTF)   { serial_puts("POR"); }
+    if (rst_cause & RCC_RSR_LPWRRSTF)  { serial_puts("LPWR"); }
+    if (rst_cause == 0)                { serial_puts("none"); }
+    serial_puts(" (RSR=");
+    print_unsigned(rst_cause);
+    serial_puts(")\r\n");
+
+    /* smazat latchnute flagy, at pristi boot ukaze jen svuj duvod */
+    RCC->RSR = RCC_RSR_RMVF;
+
+    serial_puts("--- Supervisor init ---\r\n");
+    supervisor_init();
+    supervisor_self_test();
+    supervisor_report();
+
+    alarm_update_leds();
+
+    serial_puts("\r\n--- Alarmy ---\r\n");
+    serial_puts("master: ");
+    print_unsigned(master_alarm_count());
+    serial_puts("\r\n");
+    serial_puts("alarms: ");
+    print_unsigned(alarm_count());
+    serial_puts("\r\n");
+    serial_puts("warnings: ");
+    print_unsigned(warning_count());
+    serial_puts("\r\n");
+
+    serial_puts("\r\n--- Demo: senzory ---\r\n");
+    demo_read_sensors();
+
+    serial_puts("\r\n--- Demo: serva 90 deg -> -90 deg ---\r\n");
+    pca9685_set_servo_deg(PCA9685_SERVO_STAB1, 90);
+    pca9685_set_servo_deg(PCA9685_SERVO_STAB2, -90);
+
+    serial_puts("serva: navrat do neutralu\r\n");
+    pca9685_set_servo_deg(PCA9685_SERVO_STAB1, 0);
+    pca9685_set_servo_deg(PCA9685_SERVO_STAB2, 0);
+    pca9685_set_servo_deg(PCA9685_SERVO_STAB3, 0);
+    pca9685_set_servo_deg(PCA9685_SERVO_STAB4, 0);
+    pca9685_set_servo_deg(PCA9685_SERVO_PARACHUTE, 0);
+
+    serial_puts("\r\n--- Flight init ---\r\n");
+    stabilization_init();
+    flight_init();
+    orientation_init();   /* nulovani gyra + reference "nahoru" pri kazdem bootu */
+
+    serial_puts("\r\n--- Odpocet ---\r\n");
+    countdown_init();
+
+    /* watchdog pred loggerem: boot, ktery se nekde zasekne (FAT32 smycka,
+       fault), se za ~0.5 s sam resetuje; pomalu kartu sichra refresh
+       uvnitr sectorovych operaci (fatfs.c, sd_spi.c) */
+    watchdog_init();
+    logger_init();
+    telemetry_init();
+    uplink_init();
+    status_report_init();
+
+    alarm_update_leds();
+
+    for (;;)
+    {
+        supervisor_warning_update();
+        logger_update();   /* retry SD: pripoji se samo, kdyz karta odpovi */
+        countdown_update();
+        flight_update();
+        gps_update();
+        telemetry_update();
+        orientation_update();
+        /* stabilization_update() bezi v TIM6 preruseni (50 Hz, priorita) */
+        uplink_update();
+        status_report_update();
+        watchdog_refresh();
+    }
 }
 
 static void SystemClock_Config(void)
 {
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_OscInitTypeDef osc = {0};
+    RCC_ClkInitTypeDef clk = {0};
 
-  HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
-  while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
+    HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+    while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_DIV1;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 32;
-  RCC_OscInitStruct.PLL.PLLN = 129;
-  RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 2;
-  RCC_OscInitStruct.PLL.PLLR = 2;
-  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_1;
-  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
-  RCC_OscInitStruct.PLL.PLLFRACN = 0;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    osc.HSIState = RCC_HSI_DIV1;
+    osc.HSICalibrationValue = 64;
+    osc.PLL.PLLState = RCC_PLL_ON;
+    osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+    osc.PLL.PLLM = 32;
+    osc.PLL.PLLN = 129;
+    osc.PLL.PLLP = 2;
+    osc.PLL.PLLQ = 2;
+    osc.PLL.PLLR = 2;
+    osc.PLL.PLLRGE = RCC_PLL1VCIRANGE_1;
+    osc.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK)
+        Error_Handler();
 
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2 |
-                                RCC_CLOCKTYPE_D3PCLK1 | RCC_CLOCKTYPE_D1PCLK1;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-  RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV1;
-  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV1;
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                    RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2 |
+                    RCC_CLOCKTYPE_D3PCLK1 | RCC_CLOCKTYPE_D1PCLK1;
+    clk.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    clk.SYSCLKDivider = RCC_SYSCLK_DIV1;
+    clk.AHBCLKDivider = RCC_HCLK_DIV1;
+    clk.APB3CLKDivider = RCC_APB3_DIV1;
+    clk.APB1CLKDivider = RCC_APB1_DIV1;
+    clk.APB2CLKDivider = RCC_APB2_DIV1;
+    clk.APB4CLKDivider = RCC_APB4_DIV1;
+    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_1) != HAL_OK)
+        Error_Handler();
 }
 
 static void MX_GPIO_Init(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitTypeDef gpio = {0};
 
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOF_CLK_ENABLE();
-  __HAL_RCC_GPIOG_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOD_CLK_ENABLE();
+    __HAL_RCC_GPIOE_CLK_ENABLE();
+    __HAL_RCC_GPIOF_CLK_ENABLE();
+    __HAL_RCC_GPIOG_CLK_ENABLE();
 
-  HAL_GPIO_WritePin(LORA_RST_GPIO_Port, LORA_RST_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(LORA_NSS_GPIO_Port, LORA_NSS_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(LORA_RST_GPIO_Port, LORA_RST_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(LORA_NSS_GPIO_Port, LORA_NSS_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_SET);
 
-  GPIO_InitStruct.Pin = LORA_NSS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LORA_NSS_GPIO_Port, &GPIO_InitStruct);
+    gpio.Pin = B1_Pin;
+    gpio.Mode = GPIO_MODE_INPUT;
+    gpio.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(B1_GPIO_Port, &gpio);
 
-  GPIO_InitStruct.Pin = LORA_RST_Pin;
-  HAL_GPIO_Init(LORA_RST_GPIO_Port, &GPIO_InitStruct);
+    gpio.Pin = SD_CS_Pin;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(SD_CS_GPIO_Port, &gpio);
 
-  GPIO_InitStruct.Pin = B1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+    gpio.Pin = LORA_NSS_Pin;
+    HAL_GPIO_Init(LORA_NSS_GPIO_Port, &gpio);
+    gpio.Pin = LORA_RST_Pin;
+    HAL_GPIO_Init(LORA_RST_GPIO_Port, &gpio);
 
-  GPIO_InitStruct.Pin = SD_CD_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(SD_CD_GPIO_Port, &GPIO_InitStruct);
+    gpio.Pin = LORA_DIO0_Pin;
+    gpio.Mode = GPIO_MODE_IT_RISING;
+    HAL_GPIO_Init(LORA_DIO0_GPIO_Port, &gpio);
+    HAL_NVIC_SetPriority(LORA_DIO0_EXTI_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(LORA_DIO0_EXTI_IRQn);
 
-  GPIO_InitStruct.Pin = BNO_INT_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(BNO_INT_GPIO_Port, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = LORA_DIO0_Pin;
-  HAL_GPIO_Init(LORA_DIO0_GPIO_Port, &GPIO_InitStruct);
-
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+    gpio.Pin = BNO_INT_Pin;
+    HAL_GPIO_Init(BNO_INT_GPIO_Port, &gpio);
+    HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 }
 
 static void MX_I2C1_Init(void)
 {
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x10707DBC;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK ||
-      HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK ||
-      HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    hi2c1.Instance = I2C1;
+    hi2c1.Init.Timing = 0x10707DBC;
+    hi2c1.Init.OwnAddress1 = 0;
+    hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+    hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c1.Init.OwnAddress2 = 0;
+    hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+    hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+    if (HAL_I2C_Init(&hi2c1) != HAL_OK ||
+        HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK ||
+        HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+        Error_Handler();
 }
 
 static void MX_SPI1_Init(void)
 {
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 7;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    hspi1.Instance = SPI1;
+    hspi1.Init.Mode = SPI_MODE_MASTER;
+    hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+    hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+    hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+    hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+    hspi1.Init.NSS = SPI_NSS_SOFT;
+    hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+    hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+    hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+    hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+    hspi1.Init.CRCPolynomial = 7;
+    hspi1.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
+    hspi1.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+    hspi1.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+    hspi1.Init.TxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+    hspi1.Init.RxCRCInitializationPattern = SPI_CRC_INITIALIZATION_ALL_ZERO_PATTERN;
+    hspi1.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+    hspi1.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+    hspi1.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+    hspi1.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;
+    hspi1.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+    if (HAL_SPI_Init(&hspi1) != HAL_OK)
+        Error_Handler();
+}
+
+static void MX_TIM6_Init(void)
+{
+    __HAL_RCC_TIM6_CLK_ENABLE();
+    htim6.Instance = TIM6;
+    htim6.Init.Prescaler = HAL_RCC_GetPCLK1Freq() / 1000U - 1U;
+    htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+    htim6.Init.Period = STAB_LOOP_MS - 1U;
+    htim6.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+    htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+    if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+        Error_Handler();
+    HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
+    if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK)
+        Error_Handler();
 }
 
 void Error_Handler(void)
 {
-  __disable_irq();
-  while (1)
-  {
-  }
+    __disable_irq();
+    volatile uint32_t delay = 0;
+    while (delay++ < 4000000U) {}
+    NVIC_SystemReset();
+    for (;;) {}
 }
