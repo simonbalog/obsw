@@ -1,5 +1,7 @@
 #include "countdown.h"
 #include "serial_monitor.h"
+#include "bno055.h"
+#include "bme280.h"
 #include "alarm.h"
 #include "supervisor.h"
 #include "safety.h"
@@ -200,9 +202,13 @@ static void countdown_start(void)
     /* znovu kontrola systemu */
     supervisor_self_test();
     supervisor_report();
+    supervisor_warning_update();
 
-    if (master_alarm_count() > 0)
+    if (master_alarm_count() > 0 || !bno055_flight_ready() ||
+        bme280_ground_pressure(0) != 0)
     {
+        if (!bno055_flight_ready()) master_alarm_set(MASTER_IMU);
+        if (bme280_ground_pressure(0) != 0) master_alarm_set(MASTER_BME280);
         serial_puts("countdown: ABORT - master alarm!\r\n");
         state = COUNTDOWN_STOPPED;
         phase = COUNTDOWN_PHASE_IDLE;
