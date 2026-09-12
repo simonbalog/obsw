@@ -31,3 +31,5 @@ void watchdog_refresh(void)
         return;
     HAL_IWDG_Refresh(&hiwdg);
 }
+
+int watchdog_self_test(void) { return active ? 0 : -1; }

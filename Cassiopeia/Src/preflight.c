@@ -6,12 +6,20 @@
 #include "status_report.h"
 #include "serial_monitor.h"
 #include "lora.h"
+#include "pca9685.h"
+#include "sd_spi.h"
+#include "logger.h"
+#include "watchdog.h"
+#include "flight.h"
+#include "orientation.h"
 #include <string.h>
 
-#define PREFLIGHT_CHECKS 4U
+#define PREFLIGHT_CHECKS 11U
 #define PREFLIGHT_CODE_BASE 400U
 
-static const char *names[PREFLIGHT_CHECKS] = { "BME280", "BNO055", "POWER", "ALARMS" };
+static const char *names[PREFLIGHT_CHECKS] =
+    { "BME280", "BNO055", "POWER", "SERVOS", "LORA", "SD", "LOGGER",
+      "WATCHDOG", "FLIGHT", "CALIBRATION", "ALARMS" };
 static uint16_t results[PREFLIGHT_CHECKS];
 static int overall_pass;
 static int has_result;
@@ -40,9 +48,25 @@ int preflight_run(void)
         results[1] = PREFLIGHT_CODE_BASE + 2U;
     if (power_read_battery_mv(&batt) != 0 || power_read_5v_mv(&v5) != 0)
         results[2] = PREFLIGHT_CODE_BASE + 3U;
+    if (pca9685_self_test() != 0)
+        results[3] = PREFLIGHT_CODE_BASE + 4U;
+    if (lora_self_test() != 0)
+        results[4] = PREFLIGHT_CODE_BASE + 5U;
+    if (sd_spi_self_test() != 0)
+        results[5] = PREFLIGHT_CODE_BASE + 6U;
+    if (!logger_ready())
+        results[6] = PREFLIGHT_CODE_BASE + 7U;
+    if (watchdog_self_test() != 0)
+        results[7] = PREFLIGHT_CODE_BASE + 8U;
+    if (flight_state() != FLIGHT_IDLE || bno055_flight_ready() == 0 ||
+        bme280_ground_pressure(0) != 0)
+        results[8] = PREFLIGHT_CODE_BASE + 9U;
+    if (!orientation_ready())
+        results[9] = PREFLIGHT_CODE_BASE + 10U;
+
     /* An already active alarm is never hidden by a diagnostic run. */
     if (master_alarm_count() != 0 || alarm_count() != 0)
-        results[3] = PREFLIGHT_CODE_BASE + 4U;
+        results[10] = PREFLIGHT_CODE_BASE + 11U;
 
     overall_pass = 1;
     for (i = 0; i < PREFLIGHT_CHECKS; i++) {

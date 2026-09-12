@@ -19,11 +19,13 @@ STM32CubeIDE podle `.cproject`; vlastní aplikační moduly ani ručně psaný
 
 ## Preflight
 
-Příkaz `PREFLIGHT` přes LoRa spustí omezený checklist BME280, BNO055, ADC
-napájení a aktivních alarmů. Výsledek je současně vypsán na sériovou linku a
+Příkaz `PREFLIGHT` přes LoRa nebo jako řádek `PREFLIGHT` zakončený CR/LF na
+diagnostickém USART3 spustí omezený checklist BME280, BNO055, ADC napájení,
+PCA9685/serv, LoRa, SD/FAT loggeru, watchdogu, stavu letu a kalibrace.
+Výsledek je současně vypsán na sériovou linku a
 odeslán jako `PREFLIGHT result=PASS|FAIL BME280=<code> BNO055=<code>
 POWER=<code> ALARMS=<code>`. Kód `0` znamená úspěch, chyby modulů používají
-stabilní rozsah 401–404 a celkový FAIL 400. Kontrola je pouze diagnostická:
+stabilní rozsah 401–411 a celkový FAIL 400. Kontrola je pouze diagnostická:
 nečistí alarmy, nemění stav letu ani neobchází safety.
 
 Před zpracováním letu se odmítají nefinite/mimo-rozsah vzorky BME280 (včetně

@@ -842,6 +842,10 @@ void uplink_update(void)
 
     uint8_t buf[UPLINK_MAX_LEN];
     uint8_t len = 0;
+    if (serial_command_poll(buf, &len, UPLINK_MAX_LEN) != 0) {
+        uplink_handle(buf, len);
+        return;
+    }
     if (lora_receive(buf, &len, UPLINK_MAX_LEN, UPLINK_RX_TIMEOUT) == 0)
         uplink_handle(buf, len);
 }

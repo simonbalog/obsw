@@ -34,6 +34,8 @@ static volatile int16_t gyr_bias[3] = { 0, 0, 0 };
 static volatile int gyr_calib = 0;
 static int16_t last_sample[9];
 static uint32_t same_since = 0;
+static uint8_t stale_reads;
+static uint8_t read_failures;
 
 static void print_hex_byte(uint8_t v)
 {
@@ -224,9 +226,10 @@ static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int is
                 : bus_i2c_read_reg(BNO055_ADDR, BNO055_ACC_DATA_START, d, 18);
     if (r != 0)
     {
-        alarm_set(ALARM_BNO055);
+        if (++read_failures >= 3U) alarm_set(ALARM_BNO055);
         return -1;
     }
+    read_failures = 0;
 
     if (acc)
     {
@@ -268,22 +271,25 @@ static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int is
              sample[8] == last_sample[8]))
         {
             if (same_since == 0U) same_since = HAL_GetTick();
-            if (sample[0] == 0 && sample[1] == 0 && sample[2] == 0 &&
+            if (++stale_reads >= 20U || (HAL_GetTick() - same_since > 1000U &&
+                sample[0] == 0 && sample[1] == 0 && sample[2] == 0 &&
                 sample[3] == 0 && sample[4] == 0 && sample[5] == 0 &&
-                sample[6] == 0 && sample[7] == 0 && sample[8] == 0 &&
-                HAL_GetTick() - same_since > 1000U) {
+                sample[6] == 0 && sample[7] == 0 && sample[8] == 0)) {
                 alarm_set(ALARM_BNO055);
                 return -1;
             }
+        } else {
+            same_since = HAL_GetTick();
+            stale_reads = 0;
         }
-        else same_since = HAL_GetTick();
         for (i = 0; i < 9; i++) last_sample[i] = sample[i];
-        if (sample[0] > 32000 || sample[0] < -32000 ||
-            sample[1] > 32000 || sample[1] < -32000 ||
-            sample[2] > 32000 || sample[2] < -32000 ||
-            sample[3] > 32700 || sample[3] < -32700 ||
-            sample[4] > 32700 || sample[4] < -32700 ||
-            sample[5] > 32700 || sample[5] < -32700 ||
+        /* Physical BNO055 output limits, not int16 limits (which are tautological). */
+        if (sample[0] > 16000 || sample[0] < -16000 ||
+            sample[1] > 16000 || sample[1] < -16000 ||
+            sample[2] > 16000 || sample[2] < -16000 ||
+            sample[3] > 8000 || sample[3] < -8000 ||
+            sample[4] > 8000 || sample[4] < -8000 ||
+            sample[5] > 8000 || sample[5] < -8000 ||
             sample[6] > 4000 || sample[6] < -4000 ||
             sample[7] > 4000 || sample[7] < -4000 ||
             sample[8] > 4000 || sample[8] < -4000) {
