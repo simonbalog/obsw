@@ -14,6 +14,7 @@
 #include "telem_buf.h"
 #include "fatfs.h"
 #include "orientation.h"
+#include "preflight.h"
 #include "stm32h7xx_hal.h"
 #include <string.h>
 
@@ -752,6 +753,12 @@ static void uplink_handle(const uint8_t *data, uint8_t len)
         uplink_addmin();
     else if (cmd_matches(data, len, "STAT"))
         uplink_stat();
+    else if (cmd_matches(data, len, "PREFLIGHT"))
+    {
+        serial_puts("uplink: PREFLIGHT received\r\n");
+        preflight_report_lora();
+        uplink_ack("PREFLIGHT");
+    }
     else if (cmd_matches(data, len, "PING"))
         uplink_ping();
     else if (cmd_matches(data, len, "LEDS"))

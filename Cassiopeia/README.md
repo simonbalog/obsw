@@ -16,3 +16,15 @@ Projekt obsahuje pouze generovanou HAL/CMSIS infrastrukturu:
 Konfigurace MCU a pinů je v `Cassiopeia.ioc`. Projekt se sestavuje přes
 STM32CubeIDE podle `.cproject`; vlastní aplikační moduly ani ručně psaný
 `mx_init.*` zde nejsou.
+
+## Preflight
+
+Příkaz `PREFLIGHT` přes LoRa spustí omezený checklist BME280, BNO055, ADC
+napájení a aktivních alarmů. Výsledek je současně vypsán na sériovou linku a
+odeslán jako `PREFLIGHT result=PASS|FAIL BME280=<code> BNO055=<code>
+POWER=<code> ALARMS=<code>`. Kód `0` znamená úspěch, chyby modulů používají
+stabilní rozsah 401–404 a celkový FAIL 400. Kontrola je pouze diagnostická:
+nečistí alarmy, nemění stav letu ani neobchází safety.
+
+Před zpracováním letu se odmítají nefinite/mimo-rozsah vzorky BME280 (včetně
+skoku tlaku), BNO055 (čtení, rozsah a stale data) a ADC napětí.

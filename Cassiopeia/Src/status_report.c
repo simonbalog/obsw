@@ -13,6 +13,7 @@
 #include "orientation.h"
 #include "stabilization.h"
 #include "pca9685.h"
+#include "preflight.h"
 #include "stm32h7xx_hal.h"
 #include <math.h>
 #include <string.h>
@@ -144,6 +145,9 @@ static void status_build_line(void)
     puts_bounded(&pos, " batt_mv="); uint_bounded(&pos, batt);
     puts_bounded(&pos, " 5v_mv="); uint_bounded(&pos, v5);
     puts_bounded(&pos, " safety="); puts_bounded(&pos, safety_triggered() ? "ON" : "OFF");
+    puts_bounded(&pos, " preflight=");
+    if (!preflight_has_result()) puts_bounded(&pos, "UNKNOWN");
+    else puts_bounded(&pos, preflight_passed() ? "PASS" : "FAIL");
     sline[pos] = '\0';
 }
 
