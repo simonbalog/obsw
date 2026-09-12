@@ -2,6 +2,7 @@
 #include "bus_i2c.h"
 #include "serial_monitor.h"
 #include "stm32h7xx_hal.h"
+#include "alarm.h"
 
 
 #define BNO055_CHIP_ID_REG     0x00
@@ -31,6 +32,10 @@ static int present = 0;
    z kazdeho cteni gyroskopu, i z ISR stabilizace */
 static volatile int16_t gyr_bias[3] = { 0, 0, 0 };
 static volatile int gyr_calib = 0;
+static int16_t last_sample[9];
+static uint32_t same_since = 0;
+static uint8_t stale_reads;
+static uint8_t read_failures;
 
 static void print_hex_byte(uint8_t v)
 {
@@ -220,7 +225,11 @@ static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int is
     int r = isr ? bus_i2c_read_reg_short(BNO055_ADDR, BNO055_ACC_DATA_START, d, 18)
                 : bus_i2c_read_reg(BNO055_ADDR, BNO055_ACC_DATA_START, d, 18);
     if (r != 0)
+    {
+        if (++read_failures >= 3U) alarm_set(ALARM_BNO055);
         return -1;
+    }
+    read_failures = 0;
 
     if (acc)
     {
@@ -247,6 +256,47 @@ static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int is
         }
     }
 
+    {
+        int16_t sample[9];
+        unsigned int i;
+        for (i = 0; i < 3; i++) {
+            sample[i] = (int16_t)((d[2U * i + 1U] << 8) | d[2U * i]);
+            sample[3U + i] = (int16_t)((d[7U + 2U * i] << 8) | d[6U + 2U * i]);
+            sample[6U + i] = (int16_t)((d[13U + 2U * i] << 8) | d[12U + 2U * i]);
+        }
+        if ((sample[0] == last_sample[0] && sample[1] == last_sample[1] &&
+             sample[2] == last_sample[2] && sample[3] == last_sample[3] &&
+             sample[4] == last_sample[4] && sample[5] == last_sample[5] &&
+             sample[6] == last_sample[6] && sample[7] == last_sample[7] &&
+             sample[8] == last_sample[8]))
+        {
+            if (same_since == 0U) same_since = HAL_GetTick();
+            if (++stale_reads >= 20U || (HAL_GetTick() - same_since > 1000U &&
+                sample[0] == 0 && sample[1] == 0 && sample[2] == 0 &&
+                sample[3] == 0 && sample[4] == 0 && sample[5] == 0 &&
+                sample[6] == 0 && sample[7] == 0 && sample[8] == 0)) {
+                alarm_set(ALARM_BNO055);
+                return -1;
+            }
+        } else {
+            same_since = HAL_GetTick();
+            stale_reads = 0;
+        }
+        for (i = 0; i < 9; i++) last_sample[i] = sample[i];
+        /* Physical BNO055 output limits, not int16 limits (which are tautological). */
+        if (sample[0] > 16000 || sample[0] < -16000 ||
+            sample[1] > 16000 || sample[1] < -16000 ||
+            sample[2] > 16000 || sample[2] < -16000 ||
+            sample[3] > 8000 || sample[3] < -8000 ||
+            sample[4] > 8000 || sample[4] < -8000 ||
+            sample[5] > 8000 || sample[5] < -8000 ||
+            sample[6] > 4000 || sample[6] < -4000 ||
+            sample[7] > 4000 || sample[7] < -4000 ||
+            sample[8] > 4000 || sample[8] < -4000) {
+            alarm_set(ALARM_BNO055);
+            return -1;
+        }
+    }
     return 0;
 }
 

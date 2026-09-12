@@ -1,6 +1,7 @@
 #include "power.h"
 #include "main.h"
 #include "stm32h7xx_hal.h"
+#include "alarm.h"
 
 /* Napajeni modul - mereni baterie a 5V vetve pres ADC.
  *
@@ -18,6 +19,7 @@
 
 static ADC_HandleTypeDef hadc1;
 static int ready = 0;
+static unsigned int last_error;
 
 static void adc_pin_init(void)
 {
@@ -125,9 +127,15 @@ int power_read_battery_mv(uint16_t *mv)
     if (mv == NULL)
         return -1;
     int v = adc_read_mv(ADC_CHANNEL_0);
-    if (v < 0)
+    if (v < 0 || v > 10000)
+    {
+        last_error = 1U;
+        alarm_set(ALARM_BATTERY);
         return -1;
+    }
     *mv = (uint16_t)(v * POWER_BATT_DIV);
+    if (*mv == 0 || *mv > 20000U) { last_error = 2U; alarm_set(ALARM_BATTERY); return -1; }
+    last_error = 0;
     return 0;
 }
 
@@ -136,8 +144,15 @@ int power_read_5v_mv(uint16_t *mv)
     if (mv == NULL)
         return -1;
     int v = adc_read_mv(ADC_CHANNEL_1);
-    if (v < 0)
+    if (v < 0 || v > 5000)
+    {
+        last_error = 1U;
+        alarm_set(ALARM_BATTERY);
         return -1;
+    }
     *mv = (uint16_t)(v * POWER_5V_DIV);
+    if (*mv == 0 || *mv > 7000U) { last_error = 2U; alarm_set(ALARM_BATTERY); return -1; }
     return 0;
 }
+
+unsigned int power_last_error(void) { return last_error; }

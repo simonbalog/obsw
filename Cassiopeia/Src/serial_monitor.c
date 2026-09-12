@@ -12,6 +12,11 @@
 #define USART3_BRR    (*(volatile unsigned int*)(0x4000480C))
 #define USART3_ISR    (*(volatile unsigned int*)(0x4000481C))
 #define USART3_TDR    (*(volatile unsigned int*)(0x40004828))
+#define USART3_RDR    (*(volatile unsigned int*)(0x40004824))
+#define USART3_ISR_RXNE (1U << 5)
+
+static unsigned char command_buf[64];
+static unsigned char command_len;
 
 void serial_init(void)
 {
@@ -49,6 +54,29 @@ void serial_puts(const char *s)
         return;
     while (*s)
         serial_putc(*s++);
+}
+
+int serial_command_poll(unsigned char *buf, unsigned char *len, unsigned char max_len)
+{
+    while ((USART3_ISR & USART3_ISR_RXNE) != 0U)
+    {
+        unsigned char c = (unsigned char)USART3_RDR;
+        if (c == '\r' || c == '\n')
+        {
+            if (command_len == 0U) continue;
+            if (command_len > max_len) command_len = max_len;
+            for (unsigned char i = 0; i < command_len; i++) buf[i] = command_buf[i];
+            *len = command_len;
+            command_len = 0;
+            return 1;
+        }
+        if (c == 8U || c == 127U) {
+            if (command_len) command_len--;
+        } else if (command_len < sizeof(command_buf) - 1U && c >= 32U && c <= 126U) {
+            command_buf[command_len++] = c;
+        }
+    }
+    return 0;
 }
 
 void print_unsigned(unsigned int n)

@@ -1,5 +1,8 @@
 #include "bme280.h"
 #include "bus_i2c.h"
+#include "alarm.h"
+#include "stm32h7xx_hal.h"
+#include <math.h>
 
 #define BME280_CHIP_ID_REG  0xD0
 #define BME280_CHIP_ID      0x60
@@ -38,6 +41,9 @@ static int present = 0;
 static float ground_press_hpa = 0.0f;
 static uint8_t dev_addr = BME280_ADDR; /* aktivni adresa po auto-detekci */
 static Bme280Cal cal;
+static float last_press;
+static uint32_t last_press_tick;
+static unsigned int last_error;
 
 static int bme280_read_calib(void)
 {
@@ -195,11 +201,18 @@ static uint32_t bme280_comp_hum(int32_t adc_h)
 int bme280_read(float *temp_c, float *hum_pct, float *press_hpa)
 {
     if (!present)
+    {
+        last_error = 1U;
         return -1;
+    }
 
     uint8_t d[8];
     if (bus_i2c_read_reg(dev_addr, BME280_PRESS_MSB, d, 8) != 0)
+    {
+        last_error = 2U;
+        alarm_set(ALARM_BME280);
         return -1;
+    }
 
     /* Raw 20-bit values */
     int32_t raw_p = ((int32_t)d[0] << 12) | ((int32_t)d[1] << 4) | ((int32_t)d[2] >> 4);
@@ -209,12 +222,31 @@ int bme280_read(float *temp_c, float *hum_pct, float *press_hpa)
     /* kompenzace teploty vzdy (t_fine se pouziva pro tlak i vlhkost) */
     int32_t t_comp = bme280_comp_temp(raw_t);
 
+    float tc = t_comp * 0.01f;
+    float ph = bme280_comp_press(raw_p) / 25600.0f;
+    float hh = bme280_comp_hum(raw_h) * 0.001f;
+    uint32_t now = HAL_GetTick();
+    if (!isfinite(tc) || !isfinite(ph) || !isfinite(hh) ||
+        tc < -40.0f || tc > 85.0f || ph < 300.0f || ph > 1200.0f ||
+        hh < 0.0f || hh > 100.0f ||
+        (last_press_tick != 0U && (now - last_press_tick) < 2000U &&
+         fabsf(ph - last_press) > 100.0f))
+    {
+        last_error = 3U;
+        alarm_set(ALARM_BME280);
+        return -1;
+    }
+    last_press = ph;
+    last_press_tick = now;
+    last_error = 0U;
     if (temp_c)
-        *temp_c = t_comp * 0.01f;
+        *temp_c = tc;
     if (press_hpa)
-        *press_hpa = bme280_comp_press(raw_p) / 25600.0f; /* Q24.8 -> Pa (/256) -> hPa (/100) */
+        *press_hpa = ph;
     if (hum_pct)
-        *hum_pct = bme280_comp_hum(raw_h) * 0.001f;
+        *hum_pct = hh;
 
     return 0;
 }
+
+unsigned int bme280_last_error(void) { return last_error; }
