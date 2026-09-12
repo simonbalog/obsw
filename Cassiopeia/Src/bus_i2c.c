@@ -27,6 +27,8 @@ int bus_i2c_busy(void)
 
 int bus_i2c_read_reg(uint8_t dev_addr, uint8_t reg, uint8_t *data, uint8_t len)
 {
+    if (len == 0 || data == NULL || i2c_busy)
+        return (len == 0) ? HAL_ERROR : HAL_BUSY;
     i2c_busy = 1;
     int r = HAL_I2C_Mem_Read(&hi2c1, dev_addr << 1, reg, I2C_MEMADD_SIZE_8BIT,
                              data, len, I2C_TIMEOUT);
@@ -36,6 +38,8 @@ int bus_i2c_read_reg(uint8_t dev_addr, uint8_t reg, uint8_t *data, uint8_t len)
 
 int bus_i2c_write_reg(uint8_t dev_addr, uint8_t reg, const uint8_t *data, uint8_t len)
 {
+    if (len == 0 || data == NULL || i2c_busy)
+        return (len == 0) ? HAL_ERROR : HAL_BUSY;
     i2c_busy = 1;
     int r = HAL_I2C_Mem_Write(&hi2c1, dev_addr << 1, reg, I2C_MEMADD_SIZE_8BIT,
                               (uint8_t *)data, len, I2C_TIMEOUT);
@@ -48,6 +52,8 @@ int bus_i2c_write_reg(uint8_t dev_addr, uint8_t reg, const uint8_t *data, uint8_
    hlavni smycka pouziva normalni funkce s I2C_TIMEOUT. */
 int bus_i2c_read_reg_short(uint8_t dev_addr, uint8_t reg, uint8_t *data, uint8_t len)
 {
+    if (len == 0 || data == NULL || i2c_busy)
+        return (len == 0) ? HAL_ERROR : HAL_BUSY;
     i2c_busy = 1;
     int r = HAL_I2C_Mem_Read(&hi2c1, dev_addr << 1, reg, I2C_MEMADD_SIZE_8BIT,
                              data, len, I2C_TIMEOUT_ISR);
@@ -57,6 +63,8 @@ int bus_i2c_read_reg_short(uint8_t dev_addr, uint8_t reg, uint8_t *data, uint8_t
 
 int bus_i2c_write_reg_short(uint8_t dev_addr, uint8_t reg, const uint8_t *data, uint8_t len)
 {
+    if (len == 0 || data == NULL || i2c_busy)
+        return (len == 0) ? HAL_ERROR : HAL_BUSY;
     i2c_busy = 1;
     int r = HAL_I2C_Mem_Write(&hi2c1, dev_addr << 1, reg, I2C_MEMADD_SIZE_8BIT,
                               (uint8_t *)data, len, I2C_TIMEOUT_ISR);
@@ -66,6 +74,8 @@ int bus_i2c_write_reg_short(uint8_t dev_addr, uint8_t reg, const uint8_t *data, 
 
 int bus_i2c_probe(uint8_t dev_addr)
 {
+    if (i2c_busy)
+        return 0;
     i2c_busy = 1;
     int r = HAL_I2C_IsDeviceReady(&hi2c1, dev_addr << 1, 5, I2C_TIMEOUT) == HAL_OK;
     i2c_busy = 0;

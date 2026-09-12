@@ -109,9 +109,9 @@ int power_init(void)
         return -1;
 
     uint16_t mv = 0;
-    if (power_read_battery_mv(&mv) == 0)
-        ready = 1;
-
+    if (power_read_battery_mv(&mv) != 0)
+        return -1;
+    ready = 1;
     return 0;
 }
 
@@ -122,6 +122,8 @@ int power_self_test(void)
 
 int power_read_battery_mv(uint16_t *mv)
 {
+    if (mv == NULL)
+        return -1;
     int v = adc_read_mv(ADC_CHANNEL_0);
     if (v < 0)
         return -1;
@@ -131,6 +133,8 @@ int power_read_battery_mv(uint16_t *mv)
 
 int power_read_5v_mv(uint16_t *mv)
 {
+    if (mv == NULL)
+        return -1;
     int v = adc_read_mv(ADC_CHANNEL_1);
     if (v < 0)
         return -1;

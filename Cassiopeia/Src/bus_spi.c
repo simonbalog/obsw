@@ -14,13 +14,21 @@ static uint8_t spi_rx_scratch[512];
 
 int bus_spi_transfer(const uint8_t *tx, uint8_t *rx, uint16_t len)
 {
+    if (len == 0)
+        return HAL_OK;
+    if (tx == NULL || rx == NULL)
+        return HAL_ERROR;
     return HAL_SPI_TransmitReceive(&hspi1, (uint8_t *)tx, rx, len, SPI_TIMEOUT);
 }
 
 int bus_spi_write(const uint8_t *tx, uint16_t len)
 {
+    if (len == 0)
+        return HAL_OK;
+    if (tx == NULL)
+        return HAL_ERROR;
     if (len > sizeof(spi_rx_scratch))
-        len = sizeof(spi_rx_scratch);
+        return HAL_ERROR;
     return HAL_SPI_TransmitReceive(&hspi1, (uint8_t *)tx, spi_rx_scratch, len, SPI_TIMEOUT);
 }
 

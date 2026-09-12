@@ -42,6 +42,7 @@ static int present = 0;
 static int last_rssi = -127;
 static unsigned int tx_ok = 0;
 static unsigned int tx_fail = 0;
+static int spi_error = 0;
 
 static void nss_low(void)
 {
@@ -66,7 +67,12 @@ static uint8_t lora_reg_read(uint8_t reg)
     uint8_t tx[2] = { (uint8_t)(reg & 0x7F), 0x00 };
     uint8_t rx[2];
     nss_low();
-    bus_spi_transfer(tx, rx, 2);
+    if (bus_spi_transfer(tx, rx, 2) != HAL_OK)
+    {
+        spi_error = 1;
+        nss_high();
+        return 0;
+    }
     nss_high();
     return rx[1];
 }
@@ -76,7 +82,8 @@ static void lora_reg_write(uint8_t reg, uint8_t val)
     uint8_t tx[2] = { (uint8_t)(reg | 0x80), val };
     uint8_t rx[2];
     nss_low();
-    bus_spi_transfer(tx, rx, 2);
+    if (bus_spi_transfer(tx, rx, 2) != HAL_OK)
+        spi_error = 1;
     nss_high();
 }
 
@@ -99,6 +106,7 @@ static void lora_set_freq(uint32_t freq_hz)
 
 int lora_init(void)
 {
+    spi_error = 0;
     lora_reset();
     nss_high();
 
@@ -137,6 +145,8 @@ int lora_init(void)
     lora_reg_write(LORA_REG_SYNC_WORD, 0x34);
 
     lora_enter_rx();
+    if (spi_error)
+        return -1;
     present = 1;
     return 0;
 }
@@ -152,9 +162,10 @@ int lora_send(const uint8_t *data, uint8_t len)
 {
     if (!present)
         return -1;
-    if (len > 255)
+    if (len > 0 && data == NULL)
         return -1;
 
+    spi_error = 0;
     lora_reg_write(LORA_REG_OP_MODE, LORA_MODE_STDBY);
 
     /* vymazat pripadne stare IRQ flagy (RxDone z RX_CONT apod.) pred TX,
@@ -166,6 +177,13 @@ int lora_send(const uint8_t *data, uint8_t len)
 
     for (uint8_t i = 0; i < len; i++)
         lora_reg_write(LORA_REG_FIFO, data[i]);
+
+    if (spi_error)
+    {
+        lora_enter_rx();
+        tx_fail++;
+        return -1;
+    }
 
     lora_reg_write(LORA_REG_OP_MODE, LORA_MODE_TX);
 
@@ -180,6 +198,11 @@ int lora_send(const uint8_t *data, uint8_t len)
         {
             lora_reg_write(LORA_REG_IRQ_FLAGS, 0x08);
             lora_enter_rx();
+            if (spi_error)
+            {
+                tx_fail++;
+                return -1;
+            }
             tx_ok++;
             return 0;
         }
@@ -192,30 +215,44 @@ int lora_send(const uint8_t *data, uint8_t len)
 
 int lora_receive(uint8_t *data, uint8_t *len, uint8_t max_len, uint8_t timeout_ms)
 {
-    if (!present)
+    if (!present || len == NULL || (max_len > 0 && data == NULL))
         return -1;
 
     /* rádio zustava trvale v RX_CONT (nastaveno v lora_init / lora_send) */
 
+    spi_error = 0;
     uint32_t t0 = HAL_GetTick();
     while (HAL_GetTick() - t0 < timeout_ms)
     {
         uint8_t irq = lora_reg_read(LORA_REG_IRQ_FLAGS);
+        if (spi_error)
+            return -1;
         if (irq & 0x40) /* RxDone */
         {
             lora_reg_write(LORA_REG_OP_MODE, LORA_MODE_STDBY);
+            if (spi_error)
+                return -1;
             uint8_t nb = lora_reg_read(LORA_REG_RX_NB_BYTES);
+            if (spi_error)
+                return -1;
             if (nb > max_len)
                 nb = max_len;
             lora_reg_write(LORA_REG_FIFO_ADDR_PTR, 0x00);
             for (uint8_t i = 0; i < nb; i++)
                 data[i] = lora_reg_read(LORA_REG_FIFO);
+            if (spi_error)
+            {
+                lora_enter_rx();
+                return -1;
+            }
             *len = nb;
             /* RSSI posledniho prijateho paketu (dBm).
                LF pasmo (433 MHz): RSSI = -164 + reg; HF (868 MHz): -157 + reg */
             last_rssi = -164 + (int)lora_reg_read(LORA_REG_PACKET_RSSI);
             lora_reg_write(LORA_REG_IRQ_FLAGS, 0x40);
             lora_enter_rx();
+            if (spi_error)
+                return -1;
             return 0;
         }
     }
