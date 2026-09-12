@@ -53,6 +53,7 @@
 static volatile uint8_t active = 0;
 static volatile uint8_t leveling = 0;
 static volatile int8_t test_channel = -1;   /* >=0 = vystup stabilizace jen na toto servo */
+static volatile int16_t servo_command[PCA9685_NUM_SERVOS];
 static uint32_t last_tick = 0;
 
 static PidCtrl pid_roll;
@@ -85,6 +86,8 @@ void stabilization_init(void)
     pid_init(&pid_level_roll,  1.5f, 0.0f, 0.0f, -LEVEL_MAX_DEG, LEVEL_MAX_DEG);
     active = 0;
     leveling = 0;
+    for (uint8_t i = 0; i < PCA9685_NUM_SERVOS; i++)
+        servo_command[i] = 0;
     last_tick = HAL_GetTick();
 }
 
@@ -137,9 +140,19 @@ int8_t stabilization_test_channel_get(void)
    vola z TIM6 ISR, kde se nesmi cekat na linku 100 ms */
 static void srv_out(uint8_t ch, int16_t deg)
 {
+    if (ch < PCA9685_NUM_SERVOS)
+        servo_command[ch] = deg;
     if (test_channel >= 0 && (uint8_t)test_channel != ch)
         return;
     pca9685_set_servo_deg_isr(ch, deg);
+}
+
+int stabilization_command_get(uint8_t channel, int16_t *degrees)
+{
+    if (channel >= PCA9685_NUM_SERVOS || !degrees)
+        return -1;
+    *degrees = servo_command[channel];
+    return 0;
 }
 
 static void stabilization_level_update(float dt)

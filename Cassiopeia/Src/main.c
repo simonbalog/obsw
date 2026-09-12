@@ -26,40 +26,6 @@ static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM6_Init(void);
 
-static void demo_read_sensors(void)
-{
-    float t = 0, h = 0, p = 0;
-    if (bme280_read(&t, &h, &p) == 0)
-    {
-        serial_puts("bme280: ");
-        print_unsigned((unsigned int)t);
-        serial_puts(" C, ");
-        print_unsigned((unsigned int)h);
-        serial_puts(" %, ");
-        print_unsigned((unsigned int)p);
-        serial_puts(" hPa\r\n");
-    }
-
-    int16_t acc[3], gyr[3], mag[3];
-    if (bno055_read(acc, gyr, mag) == 0)
-    {
-        serial_puts("bno055: acc=");
-        print_int(acc[0]);
-        serial_puts(",");
-        print_int(acc[1]);
-        serial_puts(",");
-        print_int(acc[2]);
-        serial_puts(" mg gyr=");
-        print_int(gyr[0]);
-        serial_puts(",");
-        print_int(gyr[1]);
-        serial_puts(",");
-        print_int(gyr[2]);
-        serial_puts(" dps\r\n");
-        bno055_diag();
-    }
-}
-
 int main(void)
 {
     /* Capture reset cause before peripheral initialization can clear it. */
@@ -74,20 +40,13 @@ int main(void)
     alarm_init();
     serial_init();
 
-    serial_puts("\r\nCassiopeia v0.9 (flight software)\r\n");
+    serial_puts("\r\nCassiopeia v0.3\r\n");
+    status_report_event("INFO", 1U, "boot");
 
-    serial_puts("rst: ");
-    if (rst_cause & RCC_RSR_IWDG1RSTF) { serial_puts("IWDG"); }
-    if (rst_cause & RCC_RSR_WWDG1RSTF) { serial_puts("WWDG"); }
-    if (rst_cause & RCC_RSR_SFTRSTF)   { serial_puts("SOFT"); }
-    if (rst_cause & RCC_RSR_PINRSTF)   { serial_puts("PIN"); }
-    if (rst_cause & RCC_RSR_BORRSTF)   { serial_puts("BOR"); }
-    if (rst_cause & RCC_RSR_PORRSTF)   { serial_puts("POR"); }
-    if (rst_cause & RCC_RSR_LPWRRSTF)  { serial_puts("LPWR"); }
-    if (rst_cause == 0)                { serial_puts("none"); }
-    serial_puts(" (RSR=");
-    print_unsigned(rst_cause);
-    serial_puts(")\r\n");
+    status_report_event((rst_cause & (RCC_RSR_IWDG1RSTF | RCC_RSR_WWDG1RSTF)) ?
+                        "MASTER" : "INFO",
+                        (rst_cause & (RCC_RSR_IWDG1RSTF | RCC_RSR_WWDG1RSTF)) ?
+                        STATUS_CODE_RESET_WATCHDOG : 2U, "reset");
 
     /* smazat latchnute flagy, at pristi boot ukaze jen svuj duvod */
     RCC->RSR = RCC_RSR_RMVF;
@@ -109,20 +68,6 @@ int main(void)
     serial_puts("warnings: ");
     print_unsigned(warning_count());
     serial_puts("\r\n");
-
-    serial_puts("\r\n--- Demo: senzory ---\r\n");
-    demo_read_sensors();
-
-    serial_puts("\r\n--- Demo: serva 90 deg -> -90 deg ---\r\n");
-    pca9685_set_servo_deg(PCA9685_SERVO_STAB1, 90);
-    pca9685_set_servo_deg(PCA9685_SERVO_STAB2, -90);
-
-    serial_puts("serva: navrat do neutralu\r\n");
-    pca9685_set_servo_deg(PCA9685_SERVO_STAB1, 0);
-    pca9685_set_servo_deg(PCA9685_SERVO_STAB2, 0);
-    pca9685_set_servo_deg(PCA9685_SERVO_STAB3, 0);
-    pca9685_set_servo_deg(PCA9685_SERVO_STAB4, 0);
-    pca9685_set_servo_deg(PCA9685_SERVO_PARACHUTE, 0);
 
     serial_puts("\r\n--- Flight init ---\r\n");
     stabilization_init();

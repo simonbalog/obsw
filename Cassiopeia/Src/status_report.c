@@ -8,213 +8,152 @@
 #include "lora.h"
 #include "telem_buf.h"
 #include "main.h"
+#include "bme280.h"
+#include "bno055.h"
+#include "orientation.h"
+#include "stabilization.h"
+#include "pca9685.h"
 #include "stm32h7xx_hal.h"
+#include <math.h>
 #include <string.h>
 
-/*
- * Status report - kompletni prehled systemu na serial monitor.
- *
- * Periodicky (STATUS_REPORT_PERIOD_MS) vypise radek se vsemi
- * dulezitymi informacemi, takze pri pripojeni kabelem (rampa / po
- * pristani) je hned videt stav systemu bez hledani v telemetrii.
- *
- * Format (CSV, bez mezer - snadny parsing i lidske cteni):
- *
- *   S;<flight>;<count_state>;<phase>;<T-rem>;<alarms>;<master>;<safety>;<batt_mV>;<5V_mV>;<rssi>
- */
+#define STATUS_REPORT_PERIOD_MS 2000U
+#define STATUS_LINE_MAX 240U
 
-#define STATUS_REPORT_PERIOD_MS 2000
-#define STATUS_LINE_MAX 160
-
-static uint32_t next_tick = 0;
+static uint32_t next_tick;
 static char sline[STATUS_LINE_MAX];
 
-static int print_unsigned_to(char *buf, unsigned int n)
+static void putc_bounded(unsigned int *pos, char c)
 {
-    int i = 0;
-    unsigned int mag = 1;
-    while (mag <= n / 10) mag *= 10;
-    while (mag > 0)
-    {
-        buf[i++] = (char)('0' + (n / mag) % 10);
-        mag /= 10;
-    }
-    return i;
+    if (*pos + 1U < STATUS_LINE_MAX)
+        sline[(*pos)++] = c;
 }
 
-static int print_int_to(char *buf, int n)
+static void puts_bounded(unsigned int *pos, const char *s)
 {
-    int i = 0;
-    if (n < 0)
-    {
-        buf[i++] = '-';
-        n = -n;
-    }
-    i += print_unsigned_to(buf + i, (unsigned int)n);
-    return i;
+    if (!s) return;
+    while (*s) putc_bounded(pos, *s++);
+}
+
+static void uint_bounded(unsigned int *pos, unsigned int n)
+{
+    char b[11];
+    unsigned int i = sizeof(b);
+    do { b[--i] = (char)('0' + n % 10U); n /= 10U; } while (n);
+    while (i < sizeof(b)) putc_bounded(pos, b[i++]);
+}
+
+static void int_bounded(unsigned int *pos, int n)
+{
+    if (n < 0) { putc_bounded(pos, '-'); n = -n; }
+    uint_bounded(pos, (unsigned int)n);
 }
 
 static const char *flight_name(FlightState s)
 {
-    switch (s)
-    {
-    case FLIGHT_IDLE:       return "IDLE";
-    case FLIGHT_PRE_LAUNCH: return "PRE_LAUNCH";
-    case FLIGHT_ASCENT:     return "ASCENT";
-    case FLIGHT_APOGEE:     return "APOGEE";
-    case FLIGHT_DESCENT:    return "DESCENT";
-    case FLIGHT_LANDED:     return "LANDED";
-    case FLIGHT_BOOT_LEVEL: return "BOOT_LEVEL";
-    case FLIGHT_BOOT_HOLD:  return "BOOT_HOLD";
-    default:                return "?";
+    switch (s) {
+    case FLIGHT_IDLE: return "IDLE"; case FLIGHT_PRE_LAUNCH: return "PRE";
+    case FLIGHT_ASCENT: return "ASCENT"; case FLIGHT_APOGEE: return "APOGEE";
+    case FLIGHT_DESCENT: return "DESCENT"; case FLIGHT_LANDED: return "LANDED";
+    case FLIGHT_BOOT_LEVEL: return "BOOT_LEVEL"; case FLIGHT_BOOT_HOLD: return "BOOT_HOLD";
+    default: return "UNKNOWN";
     }
 }
 
-static const char *count_state_name(CountdownState s)
+static const char *count_name(CountdownState s)
 {
-    switch (s)
-    {
-    case COUNTDOWN_STOPPED: return "STOPPED";
-    case COUNTDOWN_RUNNING: return "RUNNING";
-    case COUNTDOWN_ARMED:   return "ARMED";
-    default:                return "?";
-    }
+    return s == COUNTDOWN_RUNNING ? "RUNNING" :
+           s == COUNTDOWN_ARMED ? "ARMED" : "STOPPED";
 }
 
-static const char *count_phase_name(CountdownPhase p)
+static void append_codes(unsigned int *pos)
 {
-    switch (p)
-    {
-    case COUNTDOWN_PHASE_IDLE:    return "IDLE";
-    case COUNTDOWN_PHASE_CHECK:   return "CHECK";
-    case COUNTDOWN_PHASE_WAVE:    return "WAVE";
-    case COUNTDOWN_PHASE_WARNING: return "WARNING";
-    default:                      return "?";
+    unsigned int i, mask;
+    int first = 1;
+    mask = warning_mask();
+    for (i = 0; i < WRN_COUNT; i++) if (mask & (1U << i)) {
+        if (!first) putc_bounded(pos, ','); first = 0;
+        uint_bounded(pos, STATUS_CODE_WRN(i));
     }
+    mask = alarm_mask();
+    for (i = 0; i < ALARM_COUNT; i++) if (mask & (1U << i)) {
+        if (!first) putc_bounded(pos, ','); first = 0;
+        uint_bounded(pos, STATUS_CODE_ALARM(i));
+    }
+    mask = master_alarm_mask();
+    for (i = 0; i < MASTER_COUNT; i++) if (mask & (1U << i)) {
+        if (!first) putc_bounded(pos, ','); first = 0;
+        uint_bounded(pos, STATUS_CODE_MASTER(i));
+    }
+    if (first) puts_bounded(pos, "NONE");
 }
 
-void status_report_init(void)
+static unsigned int altitude_cm(float pressure, float ground)
 {
-    next_tick = HAL_GetTick() + STATUS_REPORT_PERIOD_MS;
+    float altitude = 44330.0f * (1.0f - powf(pressure / ground, 0.1903f));
+    if (altitude <= 0.0f) return 0U;
+    if (altitude >= 42949672.0f) return 0xFFFFFFFFU;
+    return (unsigned int)(altitude * 100.0f);
 }
 
 static void status_build_line(void)
 {
-    uint32_t rem = countdown_remaining_s();
-
+    float press = 0.0f, ground = 0.0f;
+    int16_t gyr[3] = {0};
+    orientation_t orient = {0};
+    unsigned int pos = 0, i;
     uint16_t batt = 0, v5 = 0;
-    if (power_read_battery_mv(&batt) != 0)
-        batt = 0;
-    if (power_read_5v_mv(&v5) != 0)
-        v5 = 0;
 
-    int i = 0;
-    sline[i++] = 'S';
-    sline[i++] = ';';
-    {
-        const char *s = flight_name(flight_state());
-        while (*s) sline[i++] = *s++;
+    (void)bme280_read(0, 0, &press);
+    (void)bme280_ground_pressure(&ground);
+    (void)bno055_read(0, gyr, 0);
+    (void)orientation_sample(&orient);
+    (void)power_read_battery_mv(&batt);
+    (void)power_read_5v_mv(&v5);
+
+    puts_bounded(&pos, "STAT v=1 flight=");
+    puts_bounded(&pos, flight_name(flight_state()));
+    puts_bounded(&pos, " count=");
+    puts_bounded(&pos, count_name(countdown_state()));
+    puts_bounded(&pos, " warn=");
+    uint_bounded(&pos, (unsigned int)warning_count());
+    puts_bounded(&pos, " alarm=");
+    uint_bounded(&pos, (unsigned int)alarm_count());
+    puts_bounded(&pos, " master=");
+    uint_bounded(&pos, (unsigned int)master_alarm_count());
+    puts_bounded(&pos, " codes=");
+    append_codes(&pos);
+    puts_bounded(&pos, " pressure_hpa=");
+    int_bounded(&pos, (int)(press * 100.0f));
+    puts_bounded(&pos, " altitude_cm=");
+    uint_bounded(&pos, ground > 0.0f ? altitude_cm(press, ground) : 0U);
+    puts_bounded(&pos, " gyro_dps=");
+    for (i = 0; i < 3; i++) { if (i) putc_bounded(&pos, ','); int_bounded(&pos, gyr[i]); }
+    puts_bounded(&pos, " nose=");
+    if (!orientation_ready()) puts_bounded(&pos, "CALIBRATING");
+    else if (orient.dir == 'U') puts_bounded(&pos, "UP");
+    else if (orient.dir == 'D') puts_bounded(&pos, "DOWN");
+    else { uint_bounded(&pos, (unsigned int)orient.clock_h); puts_bounded(&pos, "H/"); uint_bounded(&pos, (unsigned int)orient.miss_deg); puts_bounded(&pos, "deg"); }
+    puts_bounded(&pos, " stab=");
+    for (i = 0; i < 4; i++) {
+        int16_t deg = 0;
+        (void)stabilization_command_get((uint8_t)i, &deg);
+        if (i) putc_bounded(&pos, ',');
+        uint_bounded(&pos, i); putc_bounded(&pos, ':'); int_bounded(&pos, deg); putc_bounded(&pos, 'd');
     }
-    sline[i++] = ';';
-    {
-        const char *s = count_state_name(countdown_state());
-        while (*s) sline[i++] = *s++;
-    }
-    sline[i++] = ';';
-    {
-        const char *s = count_phase_name(countdown_phase());
-        while (*s) sline[i++] = *s++;
-    }
-    sline[i++] = ';';
-    sline[i++] = 'T';
-    sline[i++] = '-';
-    i += print_unsigned_to(sline + i, rem / 60);
-    sline[i++] = ':';
-    if (rem % 60 < 10) sline[i++] = '0';
-    i += print_unsigned_to(sline + i, rem % 60);
-    sline[i++] = ';';
-    {
-        const char *s = "alarms=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)alarm_count());
-    sline[i++] = ';';
-    {
-        const char *s = "master=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)master_alarm_count());
-    sline[i++] = ';';
-    {
-        const char *s = "warn=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)warning_count());
-    sline[i++] = ';';
-    {
-        const char *s = "safety=";
-        while (*s) sline[i++] = *s++;
-    }
-    {
-        const char *s = safety_triggered() ? "ON" : "OFF";
-        while (*s) sline[i++] = *s++;
-    }
-    sline[i++] = ';';
-    {
-        const char *s = "batt=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)batt);
-    {
-        const char *s = "mV;5V=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)v5);
-    {
-        const char *s = "mV;rssi=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_int_to(sline + i, lora_last_rssi());
-    {
-        const char *s = "dBm;b1=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET ? 0 : 1));
-    sline[i++] = ';';
-    {
-        const char *s = "buf=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)telem_buf_fill_pct());
-    sline[i++] = '%';
-    sline[i++] = ';';
-    {
-        const char *s = "ev=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, (unsigned int)telem_buf_evicted());
-    sline[i++] = ';';
-    {
-        const char *s = "tx=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, lora_tx_ok());
-    sline[i++] = ';';
-    {
-        const char *s = "txfail=";
-        while (*s) sline[i++] = *s++;
-    }
-    i += print_unsigned_to(sline + i, lora_tx_fail());
-    sline[i] = 0;
+    puts_bounded(&pos, " batt_mv="); uint_bounded(&pos, batt);
+    puts_bounded(&pos, " 5v_mv="); uint_bounded(&pos, v5);
+    puts_bounded(&pos, " safety="); puts_bounded(&pos, safety_triggered() ? "ON" : "OFF");
+    sline[pos] = '\0';
 }
+
+void status_report_init(void) { next_tick = HAL_GetTick() + STATUS_REPORT_PERIOD_MS; }
 
 void status_report_update(void)
 {
     uint32_t now = HAL_GetTick();
-    if (now < next_tick)
-        return;
+    if (now < next_tick) return;
     next_tick = now + STATUS_REPORT_PERIOD_MS;
-
     status_build_line();
     serial_puts(sline);
     serial_puts("\r\n");
@@ -224,4 +163,15 @@ void status_report_send_lora(void)
 {
     status_build_line();
     lora_send((const uint8_t *)sline, (uint8_t)strlen(sline));
+}
+
+void status_report_event(const char *level, unsigned int code, const char *text)
+{
+    serial_puts("EVENT level=");
+    serial_puts(level ? level : "INFO");
+    serial_puts(" code=");
+    print_unsigned(code);
+    serial_puts(" text=");
+    serial_puts(text ? text : "NONE");
+    serial_puts("\r\n");
 }

@@ -5,6 +5,8 @@
 #include "stabilization.h"
 #include "serial_monitor.h"
 #include "lora.h"
+#include "alarm.h"
+#include "status_report.h"
 #include "stm32h7xx_hal.h"
 #include <math.h>
 
@@ -76,12 +78,13 @@ void flight_init(void)
     last_sample = 0;
     landed_tick = 0;
     liftoff_count = 0;
-    ground_press = 1013.25f;
+    ground_press = 0.0f;
     boot_tick = HAL_GetTick();
 
-    float p = 0;
-    if (bme280_read(0, 0, &p) == 0 && p > 100.0f)
-        ground_press = p;
+    if (bme280_capture_ground_pressure() == 0)
+        (void)bme280_ground_pressure(&ground_press);
+    else
+        master_alarm_set(MASTER_BME280);
 
     stabilization_level_engage();
     serial_puts("flight: BOOT_LEVEL - leveling 15s (serva reaguji na naklon)\r\n");
@@ -89,6 +92,13 @@ void flight_init(void)
 
 void flight_start(void)
 {
+    if (master_alarm_count() > 0 || !bno055_flight_ready() ||
+        bme280_ground_pressure(&ground_press) != 0)
+    {
+        master_alarm_set(!bno055_flight_ready() ? MASTER_IMU : MASTER_BME280);
+        status_report_event("MASTER", STATUS_CODE_MASTER(!bno055_flight_ready() ? MASTER_IMU : MASTER_BME280), "flight-start-blocked");
+        return;
+    }
     state = FLIGHT_PRE_LAUNCH;
     max_alt = 0;
     last_sample = HAL_GetTick();

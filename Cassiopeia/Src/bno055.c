@@ -112,6 +112,17 @@ int bno055_calib_status(uint8_t *sys)
     return 0;
 }
 
+int bno055_flight_ready(void)
+{
+    uint8_t cal = 0;
+    uint8_t sys = 0;
+    if (!present ||
+        bus_i2c_read_reg(BNO055_ADDR, BNO055_CALIB_STAT, &cal, 1) != 0 ||
+        bus_i2c_read_reg(BNO055_ADDR, BNO055_SYS_STATUS, &sys, 1) != 0)
+        return 0;
+    return (((cal >> 6) & 3U) == 3U) && (sys == 5U);
+}
+
 void bno055_diag(void)
 {
     if (!present)

@@ -14,6 +14,7 @@
 #include "gps.h"
 #include "rtc.h"
 #include "stm32h7xx_hal.h"
+#include "status_report.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -88,28 +89,34 @@ void supervisor_report(void)
 {
     for (uint32_t i = 0; i < ARRAY_SIZE(modules); i++)
     {
+        serial_puts("MODULE name=");
         serial_puts(modules[i].name);
-        serial_puts(": ");
+        serial_puts(" state=");
 
         switch (modules[i].status)
         {
         case MOD_STATUS_OK:
-            serial_puts(modules[i].optional ? "-- (optional)" : "OK");
+            serial_puts(modules[i].optional ? "OPTIONAL" : "OK");
             break;
         case MOD_STATUS_INIT_ERR:
-            serial_puts("INIT ERR");
+            serial_puts("INIT_ERR");
             break;
         case MOD_STATUS_TEST_ERR:
-            serial_puts("TEST ERR");
+            serial_puts("TEST_ERR");
             break;
         default:
             serial_puts("UNKNOWN");
             break;
         }
 
-        if (!modules[i].present)
-            serial_puts(" (absent)");
-
+        serial_puts(" code=");
+        if (modules[i].alarm >= 0)
+            print_unsigned(modules[i].master ? STATUS_CODE_MASTER((unsigned int)modules[i].alarm) :
+                           STATUS_CODE_ALARM((unsigned int)modules[i].alarm));
+        else
+            serial_puts("0");
+        if (!modules[i].present) serial_puts(" present=0");
+        else serial_puts(" present=1");
         serial_puts("\r\n");
     }
 }
@@ -241,6 +248,10 @@ void supervisor_warning_update(void)
         warning_set(WRN_IMU_CAL);
     else
         warning_clear(WRN_IMU_CAL);
+    if (!bno055_flight_ready())
+        master_alarm_set(MASTER_IMU);
+    else
+        master_alarm_clear(MASTER_IMU);
 
     /* --- baterie: warning pod 7.2 V, master alarm pod 6.6 V --- */
     uint16_t mv = 0;
@@ -266,6 +277,8 @@ void supervisor_warning_update(void)
         else
             warning_clear(WRN_TEMP_OUT);
     }
+    if (bme280_ground_pressure(0) != 0)
+        master_alarm_set(MASTER_BME280);
 
     /* --- LoRa TX: rostouci pocet failu = warning --- */
     unsigned int fail = lora_tx_fail();

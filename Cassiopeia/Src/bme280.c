@@ -35,6 +35,7 @@ typedef struct
 } Bme280Cal;
 
 static int present = 0;
+static float ground_press_hpa = 0.0f;
 static uint8_t dev_addr = BME280_ADDR; /* aktivni adresa po auto-detekci */
 static Bme280Cal cal;
 
@@ -122,6 +123,27 @@ int bme280_self_test(void)
     if (bus_i2c_read_reg(dev_addr, BME280_CHIP_ID_REG, &id, 1) != 0)
         return -1;
     return (id == BME280_CHIP_ID) ? 0 : -1;
+}
+
+int bme280_capture_ground_pressure(void)
+{
+    float p = 0.0f;
+    if (bme280_read(0, 0, &p) != 0 || p < 300.0f || p > 1200.0f)
+    {
+        ground_press_hpa = 0.0f;
+        return -1;
+    }
+    ground_press_hpa = p;
+    return 0;
+}
+
+int bme280_ground_pressure(float *press_hpa)
+{
+    if (ground_press_hpa <= 0.0f)
+        return -1;
+    if (press_hpa)
+        *press_hpa = ground_press_hpa;
+    return 0;
 }
 
 /* Kompenzace dle BME280 datasheetu. */

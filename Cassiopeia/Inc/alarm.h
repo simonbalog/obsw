@@ -51,6 +51,24 @@ typedef enum {
     MASTER_COUNT
 } MasterAlarmType;
 
+/* Stable serial protocol codes.  Codes are intentionally independent of the
+ * bit positions above so they remain compatible if an enum is extended. */
+#define STATUS_CODE_WRN_BASE   100U
+#define STATUS_CODE_ALARM_BASE 200U
+#define STATUS_CODE_MASTER_BASE 300U
+
+#define STATUS_CODE_WRN(w)     (STATUS_CODE_WRN_BASE + (unsigned int)(w))
+#define STATUS_CODE_ALARM(a)   (STATUS_CODE_ALARM_BASE + (unsigned int)(a))
+#define STATUS_CODE_MASTER(a)  (STATUS_CODE_MASTER_BASE + (unsigned int)(a))
+
+#define STATUS_CODE_RESET_WATCHDOG 901U
+#define STATUS_CODE_SYSTEM_FAULT   902U
+#define STATUS_CODE_UART_TIMEOUT   903U
+#define STATUS_CODE_SAFETY_TRIGGER 910U
+#define STATUS_CODE_FLIGHT_EVENT   920U
+#define STATUS_CODE_CALIBRATION    930U
+#define STATUS_CODE_STORAGE_EVENT  940U
+
 void alarm_init(void);
 
 void warning_set(WarningType w);

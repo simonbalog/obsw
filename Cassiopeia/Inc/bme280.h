@@ -9,5 +9,7 @@
 int bme280_init(void);
 int bme280_self_test(void);
 int bme280_read(float *temp_c, float *hum_pct, float *press_hpa);
+int bme280_capture_ground_pressure(void);
+int bme280_ground_pressure(float *press_hpa);
 
 #endif
