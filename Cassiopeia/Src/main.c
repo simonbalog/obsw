@@ -164,9 +164,15 @@ static void SystemClock_Config(void)
     RCC_OscInitTypeDef osc = {0};
     RCC_ClkInitTypeDef clk = {0};
 
-    HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
+    if (HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY) != HAL_OK)
+        Error_Handler();
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
-    while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
+    uint32_t vos_start = HAL_GetTick();
+    while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY))
+    {
+        if ((uint32_t)(HAL_GetTick() - vos_start) >= 100U)
+            Error_Handler();
+    }
 
     osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
     osc.HSIState = RCC_HSI_DIV1;

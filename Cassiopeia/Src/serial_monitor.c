@@ -1,4 +1,8 @@
 #include "serial_monitor.h"
+#include "stm32h7xx_hal.h"
+
+#define SERIAL_TX_TIMEOUT_MS 100
+#define SERIAL_TX_TIMEOUT_LOOPS 1000000U
 
 #define RCC_AHB4ENR   (*(volatile unsigned int*)(0x580244E0))
 #define RCC_APB1LENR  (*(volatile unsigned int*)(0x580244E8))
@@ -28,12 +32,21 @@ void serial_init(void)
 
 void serial_putc(char c)
 {
-    while (!(USART3_ISR & (1 << 7)));
+    uint32_t start = HAL_GetTick();
+    uint32_t loops = 0;
+    while (!(USART3_ISR & (1 << 7)))
+    {
+        if ((uint32_t)(HAL_GetTick() - start) >= SERIAL_TX_TIMEOUT_MS ||
+            ++loops >= SERIAL_TX_TIMEOUT_LOOPS)
+            return;
+    }
     USART3_TDR = c;
 }
 
 void serial_puts(const char *s)
 {
+    if (s == 0)
+        return;
     while (*s)
         serial_putc(*s++);
 }
