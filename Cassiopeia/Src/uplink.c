@@ -207,15 +207,20 @@ static int parse_uint_arg(const uint8_t *d, uint8_t len, const char *prefix, uin
 {
     uint8_t i = 0;
     while (prefix[i] && i < len) i++;
-    while (i < len && d[i] == ' ') i++;
+    while (i < len && (d[i] == ' ' || d[i] == '\r' || d[i] == '\n' || d[i] == '\t')) i++;
     uint32_t v = 0;
     uint8_t digits = 0;
     while (i < len && d[i] >= '0' && d[i] <= '9')
     {
+        if (v > (UINT32_MAX - (d[i] - '0')) / 10U)
+            return -1;
         v = v * 10 + (d[i] - '0');
         i++;
         digits++;
     }
+    while (i < len && (d[i] == ' ' || d[i] == '\r' || d[i] == '\n' || d[i] == '\t')) i++;
+    if (i != len)
+        return -1;
     if (digits == 0)
         return -1;
     *val = v;
@@ -225,7 +230,7 @@ static int parse_uint_arg(const uint8_t *d, uint8_t len, const char *prefix, uin
 static void uplink_leds(const uint8_t *d, uint8_t len)
 {
     uint8_t i = 4; /* "LEDS" */
-    while (i < len && d[i] == ' ') i++;
+    while (i < len && (d[i] == ' ' || d[i] == '\r' || d[i] == '\n' || d[i] == '\t')) i++;
     int vals[3] = { 0, 0, 0 };
     for (int k = 0; k < 3; k++)
     {
@@ -245,6 +250,12 @@ static void uplink_leds(const uint8_t *d, uint8_t len)
         }
         vals[k] = (v != 0) ? 1 : 0;
         while (i < len && d[i] == ' ') i++;
+    }
+    if (i != len)
+    {
+        serial_puts("uplink: LEDS trailing garbage\r\n");
+        uplink_nak("LEDS");
+        return;
     }
     serial_puts("uplink: LEDS received\r\n");
     led_set(vals[0], vals[1], vals[2]);
@@ -682,7 +693,25 @@ static int cmd_matches(const uint8_t *d, uint8_t len, const char *cmd)
         cmd++;
         len--;
     }
-    return 1;
+    while (len > 0 && (d[0] == ' ' || d[0] == '\r' || d[0] == '\n' || d[0] == '\t'))
+    {
+        d++;
+        len--;
+    }
+    return len == 0;
+}
+
+static int cmd_with_args(const uint8_t *d, uint8_t len, const char *cmd)
+{
+    while (*cmd)
+    {
+        if (len == 0 || (((*d) | 0x20) != ((*cmd) | 0x20)))
+            return 0;
+        d++;
+        cmd++;
+        len--;
+    }
+    return len > 0 && (d[0] == ' ' || d[0] == '\r' || d[0] == '\n' || d[0] == '\t');
 }
 
 /* SERVO <ch> <deg> - vrati 0 a vyplni ch/deg pri spravnem formatu */
@@ -691,7 +720,7 @@ static int parse_servo(const uint8_t *d, uint8_t len, int *ch, int *deg)
     uint8_t i = 0;
 
     while (i < len && d[i] != ' ') i++;      /* preskocit "SERVO" */
-    while (i < len && d[i] == ' ') i++;      /* mezery */
+    while (i < len && (d[i] == ' ' || d[i] == '\r' || d[i] == '\n' || d[i] == '\t')) i++;      /* mezery */
 
     int sign = 1;
     if (i < len && (d[i] == '-' || d[i] == '+'))
@@ -710,7 +739,7 @@ static int parse_servo(const uint8_t *d, uint8_t len, int *ch, int *deg)
         return -1;
     *ch = sign * c;
 
-    while (i < len && d[i] == ' ') i++;
+    while (i < len && (d[i] == ' ' || d[i] == '\r' || d[i] == '\n' || d[i] == '\t')) i++;
 
     sign = 1;
     if (i < len && (d[i] == '-' || d[i] == '+'))
@@ -727,6 +756,9 @@ static int parse_servo(const uint8_t *d, uint8_t len, int *ch, int *deg)
         digits++;
     }
     if (digits == 0)
+        return -1;
+    while (i < len && (d[i] == ' ' || d[i] == '\r' || d[i] == '\n' || d[i] == '\t')) i++;
+    if (i != len)
         return -1;
     *deg = sign * g;
     return 0;
@@ -761,7 +793,7 @@ static void uplink_handle(const uint8_t *data, uint8_t len)
     }
     else if (cmd_matches(data, len, "PING"))
         uplink_ping();
-    else if (cmd_matches(data, len, "LEDS"))
+    else if (cmd_with_args(data, len, "LEDS"))
         uplink_leds(data, len);
     else if (cmd_matches(data, len, "NEUTRAL"))
         uplink_neutral();
@@ -769,7 +801,7 @@ static void uplink_handle(const uint8_t *data, uint8_t len)
         uplink_servo_off();
     else if (cmd_matches(data, len, "SON"))
         uplink_servo_on();
-    else if (cmd_matches(data, len, "STABT"))
+    else if (cmd_matches(data, len, "STABT") || cmd_with_args(data, len, "STABT"))
         uplink_stabtest(data, len);
     else if (cmd_matches(data, len, "GYROON"))
         uplink_gyroon();
@@ -785,9 +817,9 @@ static void uplink_handle(const uint8_t *data, uint8_t len)
         uplink_buf();
     else if (cmd_matches(data, len, "LOGS"))
         uplink_logs();
-    else if (cmd_matches(data, len, "LOGDEL"))
+    else if (cmd_with_args(data, len, "LOGDEL"))
         uplink_logdel(data, len);
-    else if (cmd_matches(data, len, "LOGSEL"))
+    else if (cmd_with_args(data, len, "LOGSEL"))
         uplink_logsel(data, len);
     else if (cmd_matches(data, len, "POWER"))
         uplink_power();
@@ -797,7 +829,7 @@ static void uplink_handle(const uint8_t *data, uint8_t len)
         uplink_rtc();
     else if (cmd_matches(data, len, "GPS"))
         uplink_gps();
-    else if (cmd_matches(data, len, "SETTIME"))
+    else if (cmd_with_args(data, len, "SETTIME"))
         uplink_settime(data, len);
     else if (cmd_matches(data, len, "MODULES"))
         uplink_modules();
@@ -805,7 +837,7 @@ static void uplink_handle(const uint8_t *data, uint8_t len)
         uplink_ver();
     else if (cmd_matches(data, len, "REBOOT"))
         uplink_reboot();
-    else if (cmd_matches(data, len, "SERVO"))
+    else if (cmd_with_args(data, len, "SERVO"))
     {
         int ch = 0, deg = 0;
         if (parse_servo(data, len, &ch, &deg) == 0

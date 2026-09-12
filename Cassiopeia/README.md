@@ -29,6 +29,20 @@ FLIGHT=<code> CALIBRATION=<code> ALARMS=<code>`. Kód `0` znamená úspěch, chy
 stabilní rozsah 401–411 a celkový FAIL 400. Kontrola je pouze diagnostická:
 nečistí alarmy, nemění stav letu ani neobchází safety.
 
+## Release hardening limitations
+
+Boot remains in `FLIGHT_IDLE`; flight control and liftoff acceptance require
+the explicit countdown/`flight_start()` authorization. Safety detection latches
+the launch master alarm and keeps stabilization engaged until an explicit
+abort. The BNO055 and LoRa interrupt pins are intentionally polled from thread
+context, so no I2C/SPI transaction is performed in an ISR.
+
+The SD logger uses SPI block access with SDSC byte-address conversion and
+bounded FAT32 geometry checks. `Cassiopeia.ioc` is aligned with the SPI1,
+TIM6, and USART3 application and the CubeIDE GCC `.cproject`; regenerate
+CubeMX code only with user code preservation enabled. Hardware card timing,
+sensor wiring, and actuator behavior still require board-level validation.
+
 Před zpracováním letu se odmítají nefinite/mimo-rozsah vzorky BME280 (včetně
 skoku nebo nepřípustné rychlosti změny tlaku), BNO055 (čtení, rozsah a stale
 data) a ADC napětí; odmítnuté vzorky se nepředávají do flight/orientation/

@@ -4,6 +4,7 @@
 #include "bme280.h"
 #include "bno055.h"
 #include "pca9685.h"
+#include "stabilization.h"
 #include "stm32h7xx_hal.h"
 
 /* Safety watch: monitoruje tlak a IMU pro predcasny odpal.
@@ -28,6 +29,9 @@ static void safety_trigger(const char *why)
 {
     triggered = 1;
     master_alarm_set(MASTER_LAUNCH);
+    /* A trigger is a latched abnormal-flight condition, not a command to
+       stop safely. Keep the control loop engaged until an explicit abort. */
+    stabilization_engage();
     serial_puts("SAFETY: trigger - ");
     serial_puts(why);
     serial_puts("\r\n");

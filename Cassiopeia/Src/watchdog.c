@@ -5,8 +5,8 @@
  *
  *  - timeout ~500 ms (prescaler 64 -> 500 Hz, reload 250)
  *  - hlavni smycka musi volat watchdog_refresh(), jinak reset MCU
- *  - zaseknuty boot se tim restartuje rychle (kratka doba, nez se karta
- *    muze znovu nasyncovat CMD0/ACMD41)
+ *  - watchdog is started at the first possible point in main(), before
+ *    clock/peripheral and storage initialization.
  */
 
 #define IWDG_PRESCALER_VAL IWDG_PRESCALER_64

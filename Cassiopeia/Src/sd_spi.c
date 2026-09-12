@@ -41,6 +41,19 @@ static unsigned int retry_total = 0;   /* pocet opakovani sektoru pres retry */
 /* deadline pro beznou operaci: 0 = bez limitu (vyuziva se jen pri initu) */
 static uint32_t sd_deadline = 0;
 
+static int sd_sector_arg(uint32_t sector, uint32_t *arg)
+{
+    if (sd_type == 0)
+    {
+        if (sector > UINT32_MAX / 512U)
+            return -1;
+        *arg = sector * 512U;
+    }
+    else
+        *arg = sector;
+    return 0;
+}
+
 static int sd_expired(void)
 {
     return sd_deadline != 0 && (int32_t)(HAL_GetTick() - sd_deadline) >= 0;
@@ -264,7 +277,10 @@ static uint8_t sd_wait_data(uint32_t timeout)
 
 int sd_spi_read_sector(uint32_t sector, uint8_t *buf)
 {
-    if (!present)
+    if (!present || !buf)
+        return -1;
+    uint32_t arg;
+    if (sd_sector_arg(sector, &arg) != 0)
         return -1;
 
     for (int attempt = 0; attempt < 3; attempt++)
@@ -274,7 +290,7 @@ int sd_spi_read_sector(uint32_t sector, uint8_t *buf)
         watchdog_refresh();
         cs_low();
         spi_dummy(1); /* par dummy clku po CS LOW pred prikazem (jako v init) */
-        uint8_t r = sd_cmd(SD_CMD17, sector);
+        uint8_t r = sd_cmd(SD_CMD17, arg);
         if (r != 0x00)
         {
             cs_high();
@@ -334,7 +350,10 @@ int sd_spi_read_sector(uint32_t sector, uint8_t *buf)
 
 int sd_spi_write_sector(uint32_t sector, const uint8_t *buf)
 {
-    if (!present)
+    if (!present || !buf)
+        return -1;
+    uint32_t arg;
+    if (sd_sector_arg(sector, &arg) != 0)
         return -1;
 
     for (int attempt = 0; attempt < 3; attempt++)
@@ -344,7 +363,7 @@ int sd_spi_write_sector(uint32_t sector, const uint8_t *buf)
         watchdog_refresh();
         cs_low();
         spi_dummy(1); /* par dummy clku po CS LOW pred prikazem (jako v init) */
-        uint8_t r = sd_cmd(SD_CMD24, sector);
+        uint8_t r = sd_cmd(SD_CMD24, arg);
         if (r != 0x00)
         {
             cs_high();
@@ -361,11 +380,24 @@ int sd_spi_write_sector(uint32_t sector, const uint8_t *buf)
 
         uint8_t token = 0xFE;
         watchdog_refresh();
-        bus_spi_write(&token, 1);
+        if (bus_spi_write(&token, 1) != HAL_OK)
+        {
+            cs_high();
+            continue;
+        }
         watchdog_refresh();
-        bus_spi_write(buf, 512);
+        if (bus_spi_write(buf, 512) != HAL_OK)
+        {
+            cs_high();
+            continue;
+        }
         watchdog_refresh();
-        spi_dummy(2); /* CRC */
+        uint8_t crc[2] = { 0xFF, 0xFF };
+        if (bus_spi_write(crc, 2) != HAL_OK)
+        {
+            cs_high();
+            continue;
+        }
 
         r = sd_wait_data(SD_TIMEOUT_DATA); /* data response token: 0x05=prijato */
         if ((r & 0x1F) != 0x05)
@@ -400,11 +432,14 @@ int sd_spi_write_sector(uint32_t sector, const uint8_t *buf)
                 break;
             }
         }
-        (void)busy;
-
+        if (!busy)
+        {
+            cs_high();
+            spi_dummy(1);
+            return 0;
+        }
         cs_high();
         spi_dummy(1);
-        return 0;
     }
     return -1;
 }

@@ -44,6 +44,7 @@ typedef struct
     uint32_t fat_sectors;
     uint32_t root_cluster;
     uint32_t data_start;    /* prvni sektor clusteru 2 */
+    uint32_t total_sectors;
     uint32_t total_clusters;
     uint32_t next_free;
 } FatFs;
@@ -82,7 +83,7 @@ static uint32_t fk_pending_nc;
 
 static int fs_read_sector(uint32_t sec, uint8_t *buf)
 {
-    if (fs_dead_expired())
+    if (fs_dead_expired() || sec >= fs.total_sectors)
         return -1;
     watchdog_refresh();
     return sd_spi_read_sector(sec, buf);
@@ -92,7 +93,7 @@ static int update_dir_size(void);
 
 static int fs_write_sector(uint32_t sec, const uint8_t *buf)
 {
-    if (fs_dead_expired())
+    if (fs_dead_expired() || sec >= fs.total_sectors)
         return -1;
     watchdog_refresh();
     return sd_spi_write_sector(sec, buf);
@@ -100,12 +101,21 @@ static int fs_write_sector(uint32_t sec, const uint8_t *buf)
 
 static uint32_t cluster_to_sector(uint32_t c)
 {
-    return fs.data_start + (c - 2) * fs.spc;
+    if (c < 2 || c > fs.total_clusters + 1 || fs.spc == 0)
+        return UINT32_MAX;
+    uint64_t sec = (uint64_t)fs.data_start + (uint64_t)(c - 2) * fs.spc;
+    if (sec >= fs.total_sectors || sec > UINT32_MAX ||
+        sec + fs.spc > fs.total_sectors)
+        return UINT32_MAX;
+    return (uint32_t)sec;
 }
 
 static uint32_t fat_entry_sector(uint32_t cluster)
 {
-    return fs.reserved + (cluster * 4) / BPS;
+    if (cluster < 2 || cluster > fs.total_clusters + 1)
+        return UINT32_MAX;
+    uint64_t sec = (uint64_t)fs.reserved + ((uint64_t)cluster * 4U) / BPS;
+    return (sec < fs.data_start && sec < UINT32_MAX) ? (uint32_t)sec : UINT32_MAX;
 }
 
 static uint16_t fat_entry_off(uint32_t cluster)
@@ -115,8 +125,11 @@ static uint16_t fat_entry_off(uint32_t cluster)
 
 static uint32_t fat_read_entry(uint32_t cluster)
 {
+    if (cluster < 2 || cluster > fs.total_clusters + 1)
+        return FAT_EOC;
     uint8_t buf[BPS];
-    if (fs_read_sector(fat_entry_sector(cluster), buf) != 0)
+    uint32_t sec = fat_entry_sector(cluster);
+    if (sec == UINT32_MAX || fs_read_sector(sec, buf) != 0)
         return FAT_EOC;
     uint16_t o = fat_entry_off(cluster);
     return (uint32_t)buf[o] | ((uint32_t)buf[o + 1] << 8)
@@ -126,6 +139,8 @@ static uint32_t fat_read_entry(uint32_t cluster)
 static int fat_write_entry(uint32_t cluster, uint32_t value)
 {
     uint32_t sec = fat_entry_sector(cluster);
+    if (sec == UINT32_MAX)
+        return -1;
     uint8_t buf[BPS];
     if (fs_read_sector(sec, buf) != 0)
         return -1;
@@ -185,8 +200,12 @@ static uint32_t fat_alloc_cluster(void)
 
 static uint32_t fat_next(uint32_t cluster)
 {
+    if (cluster < 2 || cluster > fs.total_clusters + 1)
+        return 0;
     uint32_t v = fat_read_entry(cluster);
     if (v >= FAT_EOC)
+        return 0;
+    if (v < 2 || v > fs.total_clusters + 1)
         return 0;
     return v;
 }
@@ -207,6 +226,7 @@ static void parse_bpb(const uint8_t *boot)
     fs.next_free     = 2;
     uint32_t total_sec = (uint32_t)boot[BPB_TOTAL_SEC32] | ((uint32_t)boot[BPB_TOTAL_SEC32 + 1] << 8)
                        | ((uint32_t)boot[BPB_TOTAL_SEC32 + 2] << 16) | ((uint32_t)boot[BPB_TOTAL_SEC32 + 3] << 24);
+    fs.total_sectors = total_sec;
     if (total_sec > fs.data_start && fs.spc != 0)
         fs.total_clusters = (total_sec - fs.data_start) / fs.spc;
     else
@@ -222,7 +242,11 @@ static int bpb_is_fat32(const uint8_t *boot)
     uint32_t fat16 = (uint32_t)boot[BPB_FAT16_SEC] | ((uint32_t)boot[BPB_FAT16_SEC + 1] << 8);
     if (fat16 != 0)
         return 0; /* FAT16/12 */
-    if (fs.fat_sectors == 0 || fs.root_cluster < 2)
+    if (fs.fat_sectors == 0 || fs.root_cluster < 2 ||
+        fs.total_sectors <= fs.data_start || fs.total_clusters == 0 ||
+        fs.root_cluster > fs.total_clusters + 1)
+        return 0;
+    if ((uint64_t)fs.data_start + (uint64_t)fs.total_clusters * fs.spc > fs.total_sectors)
         return 0;
     return 1;
 }
@@ -554,7 +578,9 @@ int fatfs_open_log(void)
     }
 
     cur_cluster = last_cluster;
-    cur_byte_in_cluster = f_size - bytes_in_chain;
+    if (f_size < bytes_in_chain)
+        chain_bad = 1;
+    cur_byte_in_cluster = (f_size >= bytes_in_chain) ? f_size - bytes_in_chain : 0;
 
     /* OCHRANA PROTI POSKOZENEMU RETEZCI:
        Pokud dir zaznam tvrdi vice dat, nez retezec fyzicky pokryva
@@ -647,8 +673,14 @@ static int update_dir_size(void)
 /* zapise jeden bajt na pozici cur_byte_in_cluster, posune stav */
 static int append_byte(uint8_t b)
 {
+    if (cur_cluster < 2 || cur_cluster > fs.total_clusters + 1 ||
+        cur_byte_in_cluster >= (uint32_t)fs.spc * BPS)
+        return -1;
     uint32_t sector_idx = cur_byte_in_cluster / BPS;
     uint32_t abs_sec = cluster_to_sector(cur_cluster) + sector_idx;
+    if (cluster_to_sector(cur_cluster) == UINT32_MAX ||
+        abs_sec >= fs.total_sectors)
+        return -1;
     uint16_t off = cur_byte_in_cluster % BPS;
 
     /* buffer musi odpovidat aktualnimu sektoru */

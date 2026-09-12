@@ -32,6 +32,7 @@ int main(void)
     uint32_t rst_cause = RCC->RSR;
 
     HAL_Init();
+    watchdog_init();
     SystemClock_Config();
     MX_GPIO_Init();
     MX_I2C1_Init();
@@ -77,10 +78,6 @@ int main(void)
     serial_puts("\r\n--- Odpocet ---\r\n");
     countdown_init();
 
-    /* watchdog pred loggerem: boot, ktery se nekde zasekne (FAT32 smycka,
-       fault), se za ~0.5 s sam resetuje; pomalu kartu sichra refresh
-       uvnitr sectorovych operaci (fatfs.c, sd_spi.c) */
-    watchdog_init();
     logger_init();
     telemetry_init();
     uplink_init();
@@ -181,15 +178,12 @@ static void MX_GPIO_Init(void)
     HAL_GPIO_Init(LORA_RST_GPIO_Port, &gpio);
 
     gpio.Pin = LORA_DIO0_Pin;
-    gpio.Mode = GPIO_MODE_IT_RISING;
+    gpio.Mode = GPIO_MODE_INPUT;
     HAL_GPIO_Init(LORA_DIO0_GPIO_Port, &gpio);
-    HAL_NVIC_SetPriority(LORA_DIO0_EXTI_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(LORA_DIO0_EXTI_IRQn);
 
     gpio.Pin = BNO_INT_Pin;
+    gpio.Mode = GPIO_MODE_INPUT;
     HAL_GPIO_Init(BNO_INT_GPIO_Port, &gpio);
-    HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 }
 
 static void MX_I2C1_Init(void)

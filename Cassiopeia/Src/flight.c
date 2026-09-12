@@ -13,11 +13,9 @@
 /* Letovy FSM.
  *
  *  IDLE        - mimo let
- *  BOOT_LEVEL  - po bootu 15 s: stabilizace aktivni, serva reaguji na
- *                naklon (vyrovnavani na rampe - kontrola, ze raketa stoji
- *                rovne)
- *  BOOT_HOLD   - dalsich 15 s: serva v neutralu, raketa stoji na klapkach
- *  PRE_LAUNCH  - 30 s po bootu "launch ready": ceka na prvni pohyb
+ *  BOOT_LEVEL/BOOT_HOLD are retained for compatibility but are not entered
+ *  automatically.  PRE_LAUNCH is entered only by an explicit flight_start()
+ *  authorization.
  *                (liftoff trhnuti BNO055), pak ASCENT
  *  ASCENT      - vzestup: stabilizace aktivni, sleduje apogeum
  *  APOGEE      - padak vystrelen (kanal 4 = PCA9685_SERVO_PARACHUTE)
@@ -73,26 +71,26 @@ static float acc_magnitude(const int16_t *acc)
 
 void flight_init(void)
 {
-    state = FLIGHT_BOOT_LEVEL;
+    state = FLIGHT_IDLE;
     max_alt = 0;
     last_sample = 0;
     landed_tick = 0;
     liftoff_count = 0;
     ground_press = 0.0f;
-    boot_tick = HAL_GetTick();
+    boot_tick = 0;
 
     if (bme280_capture_ground_pressure() == 0)
         (void)bme280_ground_pressure(&ground_press);
     else
         master_alarm_set(MASTER_BME280);
 
-    stabilization_level_engage();
-    serial_puts("flight: BOOT_LEVEL - leveling 15s (serva reaguji na naklon)\r\n");
+    stabilization_disengage();
+    serial_puts("flight: IDLE - launch authorization required\r\n");
 }
 
 void flight_start(void)
 {
-    if (master_alarm_count() > 0 || !bno055_flight_ready() ||
+    if (state != FLIGHT_IDLE || master_alarm_count() > 0 || !bno055_flight_ready() ||
         bme280_ground_pressure(&ground_press) != 0)
     {
         master_alarm_set(!bno055_flight_ready() ? MASTER_IMU : MASTER_BME280);
@@ -111,7 +109,7 @@ void flight_start(void)
         ground_press = p;
 
     stabilization_disengage();
-    serial_puts("flight: PRE_LAUNCH armed - waiting for liftoff\r\n");
+    serial_puts("flight: PRE_LAUNCH authorized - waiting for liftoff\r\n");
 }
 
 void flight_abort(void)
