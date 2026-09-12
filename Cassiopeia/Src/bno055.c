@@ -1,0 +1,277 @@
+#include "bno055.h"
+#include "bus_i2c.h"
+#include "serial_monitor.h"
+#include "stm32h7xx_hal.h"
+
+
+#define BNO055_CHIP_ID_REG     0x00
+#define BNO055_CHIP_ID         0xA0
+#define BNO055_ACC_ID_REG      0x01
+#define BNO055_ACC_ID_VAL      0xFB
+#define BNO055_MAG_ID_REG      0x02
+#define BNO055_MAG_ID_VAL      0x32
+#define BNO055_GYR_ID_REG      0x03
+#define BNO055_GYR_ID_VAL      0x0F
+#define BNO055_PAGE_ID         0x07
+#define BNO055_OPR_MODE        0x3D
+#define BNO055_UNIT_SEL        0x3B
+#define BNO055_PWR_MODE        0x3E
+#define BNO055_SYS_TRIGGER     0x3F
+#define BNO055_OPR_MODE_CONFIG 0x00
+#define BNO055_OPR_MODE_NDOF   0x0C
+#define BNO055_CALIB_STAT      0x35
+#define BNO055_ST_RESULT       0x36
+#define BNO055_SYS_STATUS      0x39
+#define BNO055_SYS_ERR         0x3A
+#define BNO055_ACC_DATA_START  0x08
+
+static int present = 0;
+
+/* gyro bias - nuluje se pri kazdem bootu (orientation.c) a odecita
+   z kazdeho cteni gyroskopu, i z ISR stabilizace */
+static volatile int16_t gyr_bias[3] = { 0, 0, 0 };
+static volatile int gyr_calib = 0;
+
+static void print_hex_byte(uint8_t v)
+{
+    const char *h = "0123456789ABCDEF";
+    serial_putc('0');
+    serial_putc('x');
+    serial_putc(h[(v >> 4) & 0x0F]);
+    serial_putc(h[v & 0x0F]);
+}
+
+int bno055_init(void)
+{
+    /* software reset (RST_SYS) - po power-on je treba senzor spravne
+       nastartovat, jinak nemusi bezet vsechny senzory */
+    uint8_t v = 0x20;
+    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_SYS_TRIGGER, &v, 1) != 0)
+        return -1;
+    HAL_Delay(650); /* datasheet: ~650 ms po resetu */
+
+    uint8_t id = 0;
+    if (bus_i2c_read_reg(BNO055_ADDR, BNO055_CHIP_ID_REG, &id, 1) != 0)
+        return -1;
+    if (id != BNO055_CHIP_ID)
+        return -1;
+
+    /* prechod do CONFIG modu pro zapis konfigurace */
+    v = BNO055_OPR_MODE_CONFIG;
+    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_OPR_MODE, &v, 1) != 0)
+        return -1;
+
+    v = 0x00; /* page 0 */
+    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_PAGE_ID, &v, 1) != 0)
+        return -1;
+
+    v = 0x01; /* UNIT_SEL bits1:0 = 01 -> acceleration v mg (1000 = 1 g),
+                 angular rate dps, temp degC. Puvodni 0x00 by byl m/s^2. */
+    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_UNIT_SEL, &v, 1) != 0)
+        return -1;
+
+    v = 0x00; /* normal power mode */
+    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_PWR_MODE, &v, 1) != 0)
+        return -1;
+
+    v = BNO055_OPR_MODE_NDOF; /* fusion mode */
+    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_OPR_MODE, &v, 1) != 0)
+        return -1;
+
+    /* senzor potrebuje cas na prepnuti modu, jinak jsou prvni data
+       nestabilni/stara */
+    HAL_Delay(100);
+
+    present = 1;
+    return 0;
+}
+
+int bno055_self_test(void)
+{
+    if (!present)
+        return -1;
+    uint8_t id = 0;
+    if (bus_i2c_read_reg(BNO055_ADDR, BNO055_CHIP_ID_REG, &id, 1) != 0)
+        return -1;
+    return (id == BNO055_CHIP_ID) ? 0 : -1;
+}
+
+/* diagnostika: precte ID vsech tri senzoru, self-test stav, kalibraci
+   a chybovy registr. ACC_ID musi byt 0xFB, MAG_ID 0x32, GYR_ID 0x0F.
+   Jinak jde o klon/falesny BNO055 a accel nemusi fungovat. */
+int bno055_calib_status(uint8_t *sys)
+{
+    if (!present)
+        return -1;
+    uint8_t cal = 0;
+    if (bus_i2c_read_reg(BNO055_ADDR, BNO055_CALIB_STAT, &cal, 1) != 0)
+        return -1;
+    /* CALIB_STAT: bit7:6=sys, bit5:4=gyr, bit3:2=acc, bit1:0=mag (0..3) */
+    if (sys)
+        *sys = (uint8_t)((cal >> 6) & 3);
+    return 0;
+}
+
+void bno055_diag(void)
+{
+    if (!present)
+    {
+        serial_puts("bno055 diag: NOT PRESENT\r\n");
+        return;
+    }
+
+    uint8_t acc_id = 0, mag_id = 0, gyr_id = 0;
+    uint8_t st = 0, cal = 0, sys = 0, err = 0, unitsel = 0;
+
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_ACC_ID_REG, &acc_id, 1);
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_MAG_ID_REG, &mag_id, 1);
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_GYR_ID_REG, &gyr_id, 1);
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_ST_RESULT, &st, 1);
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_CALIB_STAT, &cal, 1);
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_SYS_STATUS, &sys, 1);
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_SYS_ERR, &err, 1);
+    bus_i2c_read_reg(BNO055_ADDR, BNO055_UNIT_SEL, &unitsel, 1);
+
+    serial_puts("bno055 diag: acc_id=");
+    print_hex_byte(acc_id);
+    serial_puts(" (exp 0xFB) mag_id=");
+    print_hex_byte(mag_id);
+    serial_puts(" (exp 0x32) gyr_id=");
+    print_hex_byte(gyr_id);
+    serial_puts(" (exp 0x0F)\r\n");
+
+    serial_puts("bno055 diag: self_test=0x");
+    print_hex_byte(st);
+    serial_puts(" (bit2=ACC,bit3=GYR,bit1=MAG; 0x0E=OK) calib=");
+    print_hex_byte(cal);
+    serial_puts(" sys=");
+    print_hex_byte(sys);
+    serial_puts(" err=");
+    print_hex_byte(err);
+    serial_puts(" unitsel=");
+    print_hex_byte(unitsel);
+    serial_puts(" (ACC bits1:0: 00=m/s2, 01=mg, 10=g, 11=mg)\r\n");
+
+    uint8_t d[18];
+    if (bus_i2c_read_reg(BNO055_ADDR, BNO055_ACC_DATA_START, d, 18) == 0)
+    {
+        int16_t a[3], g[3], m[3];
+        a[0] = (int16_t)((d[1] << 8) | d[0]);
+        a[1] = (int16_t)((d[3] << 8) | d[2]);
+        a[2] = (int16_t)((d[5] << 8) | d[4]);
+        m[0] = (int16_t)((d[7] << 8) | d[6]);
+        m[1] = (int16_t)((d[9] << 8) | d[8]);
+        m[2] = (int16_t)((d[11] << 8) | d[10]);
+        g[0] = (int16_t)((d[13] << 8) | d[12]);
+        g[1] = (int16_t)((d[15] << 8) | d[14]);
+        g[2] = (int16_t)((d[17] << 8) | d[16]);
+
+        serial_puts("bno055 raw: acc=");
+        print_int(a[0]); serial_puts(","); print_int(a[1]); serial_puts(","); print_int(a[2]);
+        serial_puts(" mg gyr=");
+        print_int(g[0]); serial_puts(","); print_int(g[1]); serial_puts(","); print_int(g[2]);
+        serial_puts(" dps mag=");
+        print_int(m[0]); serial_puts(","); print_int(m[1]); serial_puts(","); print_int(m[2]);
+        serial_puts(" uT\r\n");
+    }
+
+    /* gravity vector + quaternion (fusion vystupy) */
+    uint8_t dv[6], q[8];
+    if (bus_i2c_read_reg(BNO055_ADDR, 0x2E, dv, 6) == 0)
+    {
+        int16_t gx = (int16_t)((dv[1] << 8) | dv[0]);
+        int16_t gy = (int16_t)((dv[3] << 8) | dv[2]);
+        int16_t gz = (int16_t)((dv[5] << 8) | dv[4]);
+        serial_puts("bno055 grav_vec=");
+        print_int(gx); serial_puts(","); print_int(gy); serial_puts(","); print_int(gz);
+        serial_puts(" (0,0,~1000 = vodorovne, Z smerem nahoru)\r\n");
+    }
+    if (bus_i2c_read_reg(BNO055_ADDR, 0x34, q, 8) == 0)
+    {
+        int16_t qw = (int16_t)((q[1] << 8) | q[0]);
+        int16_t qx = (int16_t)((q[3] << 8) | q[2]);
+        int16_t qy = (int16_t)((q[5] << 8) | q[4]);
+        int16_t qz = (int16_t)((q[7] << 8) | q[6]);
+        serial_puts("bno055 quat=");
+        print_int(qw); serial_puts(","); print_int(qx); serial_puts(","); print_int(qy); serial_puts(","); print_int(qz);
+        serial_puts(" (scale 2^14)\r\n");
+    }
+}
+
+/* isr != 0 = volano z TIM6 ISR stabilizace -> kratky I2C timeout
+   (bus_i2c_read_reg_short), aby se ISR neblokovala na seknute lince. */
+static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int isr)
+{
+    if (!present)
+        return -1;
+
+    uint8_t d[18];
+    int r = isr ? bus_i2c_read_reg_short(BNO055_ADDR, BNO055_ACC_DATA_START, d, 18)
+                : bus_i2c_read_reg(BNO055_ADDR, BNO055_ACC_DATA_START, d, 18);
+    if (r != 0)
+        return -1;
+
+    if (acc)
+    {
+        acc[0] = (int16_t)((d[1] << 8) | d[0]);
+        acc[1] = (int16_t)((d[3] << 8) | d[2]);
+        acc[2] = (int16_t)((d[5] << 8) | d[4]);
+    }
+    if (mag)
+    {
+        mag[0] = (int16_t)((d[7] << 8) | d[6]);
+        mag[1] = (int16_t)((d[9] << 8) | d[8]);
+        mag[2] = (int16_t)((d[11] << 8) | d[10]);
+    }
+    if (gyr)
+    {
+        gyr[0] = (int16_t)((d[13] << 8) | d[12]);
+        gyr[1] = (int16_t)((d[15] << 8) | d[14]);
+        gyr[2] = (int16_t)((d[17] << 8) | d[16]);
+        if (gyr_calib)
+        {
+            gyr[0] = (int16_t)(gyr[0] - gyr_bias[0]);
+            gyr[1] = (int16_t)(gyr[1] - gyr_bias[1]);
+            gyr[2] = (int16_t)(gyr[2] - gyr_bias[2]);
+        }
+    }
+
+    return 0;
+}
+
+int bno055_read(int16_t *acc, int16_t *gyr, int16_t *mag)
+{
+    return bno055_read_internal(acc, gyr, mag, 0);
+}
+
+int bno055_read_isr(int16_t *acc, int16_t *gyr, int16_t *mag)
+{
+    return bno055_read_internal(acc, gyr, mag, 1);
+}
+
+void bno055_gyro_bias_reset(void)
+{
+    gyr_bias[0] = gyr_bias[1] = gyr_bias[2] = 0;
+    gyr_calib = 0;
+}
+
+void bno055_gyro_bias_set(const int16_t bias[3])
+{
+    gyr_bias[0] = bias[0];
+    gyr_bias[1] = bias[1];
+    gyr_bias[2] = bias[2];
+    gyr_calib = 1;
+}
+
+int bno055_gyro_bias_get(int16_t bias[3])
+{
+    if (!gyr_calib)
+        return -1;
+    if (bias)
+    {
+        bias[0] = gyr_bias[0];
+        bias[1] = gyr_bias[1];
+        bias[2] = gyr_bias[2];
+    }
+    return 0;
+}
