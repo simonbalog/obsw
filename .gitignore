@@ -1,0 +1,5 @@
+Cassiopeia/Debug/
+Cassiopeia/Release/
+.metadata/
+__pycache__/
+*.pyc
