@@ -45,6 +45,8 @@ typedef struct
     uint32_t root_cluster;
     uint32_t data_start;    /* prvni sektor clusteru 2 */
     uint32_t total_sectors;
+    uint32_t volume_start;
+    uint32_t volume_sectors;
     uint32_t total_clusters;
     uint32_t next_free;
 } FatFs;
@@ -83,7 +85,7 @@ static uint32_t fk_pending_nc;
 
 static int fs_read_sector(uint32_t sec, uint8_t *buf)
 {
-    if (fs_dead_expired() || sec >= fs.total_sectors)
+    if (fs_dead_expired() || (fs.total_sectors != 0 && sec >= fs.total_sectors))
         return -1;
     watchdog_refresh();
     return sd_spi_read_sector(sec, buf);
@@ -114,7 +116,8 @@ static uint32_t fat_entry_sector(uint32_t cluster)
 {
     if (cluster < 2 || cluster > fs.total_clusters + 1)
         return UINT32_MAX;
-    uint64_t sec = (uint64_t)fs.reserved + ((uint64_t)cluster * 4U) / BPS;
+    uint64_t sec = (uint64_t)fs.volume_start + fs.reserved
+                 + ((uint64_t)cluster * 4U) / BPS;
     return (sec < fs.data_start && sec < UINT32_MAX) ? (uint32_t)sec : UINT32_MAX;
 }
 
@@ -212,7 +215,7 @@ static uint32_t fat_next(uint32_t cluster)
 
 /* ---------------- mount / format ---------------- */
 
-static void parse_bpb(const uint8_t *boot)
+static void parse_bpb(const uint8_t *boot, uint32_t volume_start)
 {
     fs.bps           = boot[BPB_BYTES_PER_SEC] | (boot[BPB_BYTES_PER_SEC + 1] << 8);
     fs.spc           = boot[BPB_SPC];
@@ -222,13 +225,15 @@ static void parse_bpb(const uint8_t *boot)
                      | ((uint32_t)boot[BPB_FAT_SEC32 + 2] << 16) | ((uint32_t)boot[BPB_FAT_SEC32 + 3] << 24);
     fs.root_cluster  = (uint32_t)boot[BPB_ROOT_CLUSTER] | ((uint32_t)boot[BPB_ROOT_CLUSTER + 1] << 8)
                      | ((uint32_t)boot[BPB_ROOT_CLUSTER + 2] << 16) | ((uint32_t)boot[BPB_ROOT_CLUSTER + 3] << 24);
-    fs.data_start    = fs.reserved + fs.nfats * fs.fat_sectors;
+    fs.volume_start  = volume_start;
+    fs.data_start    = volume_start + fs.reserved + fs.nfats * fs.fat_sectors;
     fs.next_free     = 2;
     uint32_t total_sec = (uint32_t)boot[BPB_TOTAL_SEC32] | ((uint32_t)boot[BPB_TOTAL_SEC32 + 1] << 8)
                        | ((uint32_t)boot[BPB_TOTAL_SEC32 + 2] << 16) | ((uint32_t)boot[BPB_TOTAL_SEC32 + 3] << 24);
-    fs.total_sectors = total_sec;
-    if (total_sec > fs.data_start && fs.spc != 0)
-        fs.total_clusters = (total_sec - fs.data_start) / fs.spc;
+    fs.volume_sectors = total_sec;
+    fs.total_sectors = volume_start + total_sec;
+    if (total_sec > fs.reserved + fs.nfats * fs.fat_sectors && fs.spc != 0)
+        fs.total_clusters = (total_sec - fs.reserved - fs.nfats * fs.fat_sectors) / fs.spc;
     else
         fs.total_clusters = 0;
 }
@@ -434,6 +439,8 @@ static int root_delete_file(const char *name, const char *ext)
 
 int fatfs_init(void)
 {
+    mounted = 0;
+    memset(&fs, 0, sizeof(fs));
     fs_deadline = HAL_GetTick() + FATFS_INIT_MAX_MS;
 
     uint8_t boot[BPS];
@@ -444,7 +451,36 @@ int fatfs_init(void)
         return -1;
     }
 
-    parse_bpb(boot);
+    uint32_t volume_start = 0;
+    parse_bpb(boot, volume_start);
+    if (!bpb_is_fat32(boot) && boot[510] == 0x55 && boot[511] == 0xAA)
+    {
+        /* Windows normally creates an MBR partition.  The FAT volume
+           begins at the partition LBA, not at physical sector zero. */
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            const uint8_t *part = &boot[446 + i * 16];
+            uint8_t type = part[4];
+            uint32_t start = (uint32_t)part[8] | ((uint32_t)part[9] << 8)
+                           | ((uint32_t)part[10] << 16) | ((uint32_t)part[11] << 24);
+            uint32_t length = (uint32_t)part[12] | ((uint32_t)part[13] << 8)
+                            | ((uint32_t)part[14] << 16) | ((uint32_t)part[15] << 24);
+            if ((type == 0x0B || type == 0x0C) && start != 0 && length != 0)
+            {
+                if (sd_spi_read_sector(start, boot) != 0)
+                    break;
+                parse_bpb(boot, start);
+                if (fs.volume_sectors > length ||
+                    start > UINT32_MAX - fs.volume_sectors)
+                {
+                    fs.total_clusters = 0;
+                    break;
+                }
+                volume_start = start;
+                break;
+            }
+        }
+    }
     if (!bpb_is_fat32(boot))
     {
         if (bpb_other_fs(boot))
@@ -802,6 +838,31 @@ done:
     return rc;
 }
 
+int fatfs_sync(void)
+{
+    if (!mounted)
+        return -1;
+    fs_deadline = HAL_GetTick() + FATFS_LINE_MAX_MS;
+    if (sec_fill != 0 && fs_write_sector(sec_sector, sec_buf) != 0)
+    {
+        fs_deadline = 0;
+        return -1;
+    }
+    sec_fill = 0;
+    if (fk_pending_prev != 0)
+    {
+        if (fat_write_entry(fk_pending_prev, fk_pending_nc) != 0)
+        {
+            fs_deadline = 0;
+            return -1;
+        }
+        fk_pending_prev = 0;
+    }
+    int rc = update_dir_size();
+    fs_deadline = 0;
+    return rc;
+}
+
 unsigned int fatfs_fat2_fallback_count(void)
 {
     return fat2_fallback;
@@ -882,18 +943,20 @@ int fatfs_select_log(uint8_t n)
         uint32_t bytes_in_chain = 0;
         uint32_t last = first;
         uint32_t guard = 0;
+        int at_end = 0;
         while (c != 0 && guard++ <= fs.total_clusters)
         {
             uint32_t next = fat_next(c);
             if (next == 0)
             {
                 last = c;
+                at_end = 1;
                 break;
             }
             bytes_in_chain += fs.spc * BPS;
             c = next;
         }
-        if (c != 0)
+        if (!at_end)
             return -1;   /* zacykleny retezec - nemenime */
 
         cur_byte_in_cluster = f_size - bytes_in_chain;

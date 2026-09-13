@@ -248,6 +248,7 @@ static void countdown_add_min(void)
 void countdown_abort(void)
 {
     serial_puts("\r\ncountdown: ABORT - launch cancelled\r\n");
+    (void)logger_sync();
 
     /* 1) stabilizace vypnuta, serva do neutralu (vc. padaku) */
     stabilization_disengage();

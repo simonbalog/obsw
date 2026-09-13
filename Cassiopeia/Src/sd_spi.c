@@ -110,6 +110,7 @@ static uint8_t sd_cmd(uint8_t cmd, uint32_t arg)
 
 int sd_spi_init(void)
 {
+    present = 0;
     /* init musi jet pomalu - SPI kernel = PLL1_Q = 129 MHz / 256 = ~504 kHz */
     if (bus_spi_baud_slow() != 0)
         return -1;
@@ -181,13 +182,22 @@ int sd_spi_init(void)
         for (int i = 0; i < 4; i++)
         {
             watchdog_refresh();
-            bus_spi_transfer(&ff, &ocr[i], 1);
+            if (bus_spi_transfer(&ff, &ocr[i], 1) != HAL_OK)
+            {
+                cs_high();
+                goto fail;
+            }
         }
         if ((ocr[0] & 0x40) == 0)
             sd_type = 0; /* SDSC */
     }
 
     r = sd_cmd(SD_CMD16, 512);
+    if (r != 0x00)
+    {
+        cs_high();
+        goto fail;
+    }
     cs_high();
     spi_dummy(1);
 

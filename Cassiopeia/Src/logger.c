@@ -88,6 +88,18 @@ int logger_log(const char *line)
     return 0;
 }
 
+int logger_sync(void)
+{
+    if (fatfs_sync() != 0)
+    {
+        logger_suspect = 1;
+        logger_fails++;
+        serial_puts("logger: sync FAIL (SD absent/error)\r\n");
+        return -1;
+    }
+    return 0;
+}
+
 unsigned int logger_fail_count(void)
 {
     return logger_fails;

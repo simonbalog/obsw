@@ -7,4 +7,6 @@ unsigned int logger_fail_count(void);
 int logger_ready(void);         /* 1 = log jde zapisovat (SD pripojena) */
 int logger_update(void);        /* retry SD pripojeni z hlavni smycky */
 
+int logger_sync(void);
+
 #endif

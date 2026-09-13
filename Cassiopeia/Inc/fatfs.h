@@ -8,6 +8,7 @@
 int fatfs_init(void);
 int fatfs_open_log(void);
 int fatfs_append_line(const char *line);
+int fatfs_sync(void);
 unsigned int fatfs_fat2_fallback_count(void);
 int fatfs_mounted(void);                /* 1 = mount probehl, log je otevreny */
 

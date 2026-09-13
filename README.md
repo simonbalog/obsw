@@ -36,3 +36,29 @@ and calculated `altitude_cm` are relative to that captured reference;
 (`UP`, `DOWN`, or `12H/3H/...` plus degrees), and commanded stabilization
 channels. Hardware validation is still required for sensor mounting,
 calibration, and actuator sign conventions.
+
+## SD telemetry logging
+
+When the SD transport is available and the card contains a supported FAT32
+volume, telemetry is appended as ordinary ASCII lines to **`LOG.TXT`** in the
+root directory. Existing `LOG.TXT` content is preserved; each record is one
+telemetry/status line followed by `LF`. The file is standard FAT32 and can be
+opened directly by Windows. The logger writes complete sectors and updates the
+directory size on every record; an abort also performs a final metadata/data
+sync.
+
+Use the periodic `STAT` line to distinguish failures:
+`sd_transport=FAIL` means SPI/card initialization or sector I/O failed;
+`sd_transport=OK logger_fs=FAIL` means the card transport works but the
+filesystem is absent, unsupported, corrupt, or could not be updated. `LOGS`
+reports the active log and sizes; `LOGSEL 0` selects `LOG.TXT` and `LOGDEL 1`
+through `LOGDEL 3` removes only the backup logs. These commands are handled in
+`Cassiopeia/Src/uplink.c`; there is no `commands.txt` file in this repository.
+
+For safe extraction, issue `ABORT` (or otherwise allow the flight software to
+finish its normal abort path), wait for the final status/serial output, remove
+power, and then eject the card from Windows. Never remove the card during an
+SD write. Cards must be preformatted on a PC as FAT32 with 512-byte sectors;
+FAT12/FAT16, exFAT, unformatted media, and malformed volumes are rejected
+without formatting or modifying existing user data. Both super-floppy FAT32
+and normal MBR-partitioned FAT32 cards are supported.
