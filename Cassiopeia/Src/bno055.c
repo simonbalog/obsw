@@ -175,13 +175,15 @@ int bno055_flight_status_full(uint8_t *calib_sys, uint8_t *calib_gyr,
 
 int bno055_flight_ready(void)
 {
-    uint8_t calib_sys = 0, calib_gyr = 0, calib_acc = 0, calib_mag = 0;
     uint8_t sys_status = 0;
-    if (bno055_flight_status_full(&calib_sys, &calib_gyr, &calib_acc,
-                                  &calib_mag, &sys_status) != 0)
+    /*
+     * Calibration quality is reported as WRN_IMU_CAL, but it is not a
+     * launch interlock. The fusion engine must be running and reporting
+     * SYS_STATUS=5; sample validity is checked by supervisor_warning_update.
+     */
+    if (bno055_flight_status(0, &sys_status) != 0)
         return 0;
-    return calib_sys == 3U && calib_gyr == 3U && calib_acc == 3U &&
-           calib_mag == 3U && sys_status == 5U;
+    return sys_status == 5U;
 }
 
 int bno055_calibration_begin(void)

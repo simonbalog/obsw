@@ -274,8 +274,7 @@ void supervisor_warning_update(void)
         warning_set(WRN_IMU_CAL);
     else
         warning_clear(WRN_IMU_CAL);
-    int imu_ready = imu_status_ok && csys == 3U && cgyr == 3U &&
-                    cacc == 3U && cmag == 3U && sys_status == 5U;
+    int imu_ready = imu_status_ok && sys_status == 5U;
     if (!imu_ready || !imu_sample_ok)
         master_alarm_set(MASTER_IMU);
     else
