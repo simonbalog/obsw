@@ -69,7 +69,12 @@
 
 #define UPLINK_PERIOD_MS  100
 #define UPLINK_RX_TIMEOUT 5
-#define UPLINK_MAX_LEN    16
+/*
+ * Maximum uplink command body. SETTIME's longest valid form is
+ * "SETTIME 2099 12 31 23 59 59" (27 bytes); 32 leaves bounded room for
+ * separator whitespace while CR/LF are consumed by the serial line reader.
+ */
+#define UPLINK_MAX_LEN    32
 
 static uint32_t next_poll = 0;
 

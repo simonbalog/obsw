@@ -67,3 +67,13 @@ Před zpracováním letu se odmítají nefinite/mimo-rozsah vzorky BME280 (včet
 skoku nebo nepřípustné rychlosti změny tlaku), BNO055 (čtení, rozsah a stale
 data) a ADC napětí; odmítnuté vzorky se nepředávají do flight/orientation/
 stabilization logiky a aktivují příslušný alarm.
+
+## Uplink command limit
+
+Uplink commands received over LoRa or USART3 are bounded to **32 ASCII
+bytes**. The limit accommodates the longest `SETTIME` command
+(`SETTIME 2099 12 31 23 59 59`, 27 bytes) plus separator whitespace; CR/LF
+are line terminators on USART3 and are not part of the command body. The
+existing parser validation and flight/safety interlocks apply unchanged.
+`SETTIME` values are UTC and must be followed by `ACK:SETTIME`; invalid
+values return `NAK:SETTIME`.
