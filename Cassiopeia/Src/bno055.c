@@ -51,6 +51,8 @@ int bno055_init(void)
     same_since = 0;
     stale_reads = 0;
     read_failures = 0;
+    for (unsigned int i = 0; i < 9U; i++)
+        last_sample[i] = 0;
     /* software reset (RST_SYS) - po power-on je treba senzor spravne
        nastartovat, jinak nemusi bezet vsechny senzory */
     uint8_t v = 0x20;
@@ -244,6 +246,8 @@ static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int is
                 : bus_i2c_read_reg(BNO055_ADDR, BNO055_ACC_DATA_START, d, 18);
     if (r != 0)
     {
+        same_since = 0;
+        stale_reads = 0;
         if (++read_failures >= 3U) alarm_set(ALARM_BNO055);
         return -1;
     }
