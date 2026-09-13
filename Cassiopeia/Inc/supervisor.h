@@ -6,6 +6,7 @@
 #define MOD_STATUS_OK        0
 #define MOD_STATUS_INIT_ERR  1
 #define MOD_STATUS_TEST_ERR  2
+#define MOD_STATUS_RUNTIME_ERR 3
 
 typedef int (*mod_init_fn)(void);
 typedef int (*mod_self_test_fn)(void);

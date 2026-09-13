@@ -239,6 +239,7 @@ int bme280_read(float *temp_c, float *hum_pct, float *press_hpa)
     last_press = ph;
     last_press_tick = now;
     last_error = 0U;
+    alarm_clear(ALARM_BME280);
     if (temp_c)
         *temp_c = tc;
     if (press_hpa)

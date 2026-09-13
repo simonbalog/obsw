@@ -31,6 +31,14 @@ static ModuleDef modules[] =
     { "rtc",     rtc_init,     rtc_self_test,     MOD_STATUS_OK, 0, -1,            0, 0 },
 };
 
+static void runtime_status(uint32_t index, int healthy)
+{
+    if (modules[index].status == MOD_STATUS_INIT_ERR ||
+        modules[index].status == MOD_STATUS_TEST_ERR)
+        return;
+    modules[index].status = healthy ? MOD_STATUS_OK : MOD_STATUS_RUNTIME_ERR;
+}
+
 static void module_alarm_set(int alarm, int master)
 {
     if (master)
@@ -104,6 +112,9 @@ void supervisor_report(void)
             break;
         case MOD_STATUS_TEST_ERR:
             serial_puts("TEST_ERR");
+            break;
+        case MOD_STATUS_RUNTIME_ERR:
+            serial_puts("RUNTIME_ERR");
             break;
         default:
             serial_puts("UNKNOWN");
@@ -247,15 +258,19 @@ void supervisor_warning_update(void)
     /* --- IMU: kalibrace (sys 3 = plne kalibrovano) --- */
     watchdog_refresh();
     uint8_t csys = 0;
+    int16_t imu_acc[3], imu_gyr[3], imu_mag[3];
+    int imu_sample_ok = bno055_read(imu_acc, imu_gyr, imu_mag) == 0;
     if (bno055_self_test() == 0 &&
         bno055_calib_status(&csys) == 0 && csys < 3)
         warning_set(WRN_IMU_CAL);
     else
         warning_clear(WRN_IMU_CAL);
-    if (!bno055_flight_ready())
+    int imu_ready = bno055_flight_ready();
+    if (!imu_ready || !imu_sample_ok)
         master_alarm_set(MASTER_IMU);
     else
         master_alarm_clear(MASTER_IMU);
+    runtime_status(1, imu_ready && imu_sample_ok && !alarm_get(ALARM_BNO055));
 
     /* --- baterie: warning pod 7.2 V, master alarm pod 6.6 V --- */
     watchdog_refresh();
@@ -276,15 +291,28 @@ void supervisor_warning_update(void)
     /* --- teplota --- */
     watchdog_refresh();
     float t = 0, hh = 0, p = 0;
-    if (bme280_read(&t, &hh, &p) == 0)
+    int bme_sample_ok = bme280_read(&t, &hh, &p) == 0;
+    if (bme_sample_ok)
     {
         if (t < WRN_TEMP_MIN_C || t > WRN_TEMP_MAX_C)
             warning_set(WRN_TEMP_OUT);
         else
             warning_clear(WRN_TEMP_OUT);
+        /* A transient boot sample must not permanently prevent recovery:
+           establish ground pressure from a fresh, plausible sample. */
+        if (bme280_ground_pressure(0) != 0)
+            bme_sample_ok = bme280_capture_ground_pressure() == 0;
     }
-    if (bme280_ground_pressure(0) != 0)
+    if (bme_sample_ok && bme280_ground_pressure(0) == 0)
+    {
+        master_alarm_clear(MASTER_BME280);
+        runtime_status(0, 1);
+    }
+    else
+    {
         master_alarm_set(MASTER_BME280);
+        runtime_status(0, 0);
+    }
 
     /* --- LoRa TX: rostouci pocet failu = warning --- */
     watchdog_refresh();

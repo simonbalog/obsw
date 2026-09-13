@@ -1,4 +1,6 @@
 #include "status_report.h"
+#include "sd_spi.h"
+#include "logger.h"
 #include "serial_monitor.h"
 #include "countdown.h"
 #include "flight.h"
@@ -144,6 +146,10 @@ static void status_build_line(void)
     }
     puts_bounded(&pos, " batt_mv="); uint_bounded(&pos, batt);
     puts_bounded(&pos, " 5v_mv="); uint_bounded(&pos, v5);
+    puts_bounded(&pos, " sd_transport=");
+    puts_bounded(&pos, sd_spi_self_test() == 0 ? "OK" : "FAIL");
+    puts_bounded(&pos, " logger_fs=");
+    puts_bounded(&pos, logger_ready() ? "OK" : "FAIL");
     puts_bounded(&pos, " safety="); puts_bounded(&pos, safety_triggered() ? "ON" : "OFF");
     puts_bounded(&pos, " preflight=");
     if (!preflight_has_result()) puts_bounded(&pos, "UNKNOWN");

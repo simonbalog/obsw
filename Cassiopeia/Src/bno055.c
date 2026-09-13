@@ -48,6 +48,9 @@ static void print_hex_byte(uint8_t v)
 
 int bno055_init(void)
 {
+    same_since = 0;
+    stale_reads = 0;
+    read_failures = 0;
     /* software reset (RST_SYS) - po power-on je treba senzor spravne
        nastartovat, jinak nemusi bezet vsechny senzory */
     uint8_t v = 0x20;
@@ -297,6 +300,7 @@ static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int is
             return -1;
         }
     }
+    alarm_clear(ALARM_BNO055);
     return 0;
 }
 
