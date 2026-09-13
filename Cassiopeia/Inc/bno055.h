@@ -11,6 +11,7 @@ int bno055_read(int16_t *acc, int16_t *gyr, int16_t *mag);
 int bno055_read_isr(int16_t *acc, int16_t *gyr, int16_t *mag);  /* kratky I2C timeout, jen pro TIM6 ISR */
 void bno055_diag(void);
 int bno055_calib_status(uint8_t *sys);  /* sys = 0..3 (3 = plne kalibrovano) */
+int bno055_flight_status(uint8_t *calib_sys, uint8_t *sys_status);
 int bno055_flight_ready(void);
 
 /* Gyro bias (auto-kalibrace pri kazdem bootu, viz orientation.c).

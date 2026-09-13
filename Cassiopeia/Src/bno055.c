@@ -120,15 +120,30 @@ int bno055_calib_status(uint8_t *sys)
     return 0;
 }
 
-int bno055_flight_ready(void)
+int bno055_flight_status(uint8_t *calib_sys, uint8_t *sys_status)
 {
     uint8_t cal = 0;
-    uint8_t sys = 0;
+    uint8_t status = 0;
+
     if (!present ||
         bus_i2c_read_reg(BNO055_ADDR, BNO055_CALIB_STAT, &cal, 1) != 0 ||
-        bus_i2c_read_reg(BNO055_ADDR, BNO055_SYS_STATUS, &sys, 1) != 0)
+        bus_i2c_read_reg(BNO055_ADDR, BNO055_SYS_STATUS, &status, 1) != 0)
+        return -1;
+
+    if (calib_sys)
+        *calib_sys = (uint8_t)((cal >> 6) & 3U);
+    if (sys_status)
+        *sys_status = status;
+    return 0;
+}
+
+int bno055_flight_ready(void)
+{
+    uint8_t calib_sys = 0;
+    uint8_t sys_status = 0;
+    if (bno055_flight_status(&calib_sys, &sys_status) != 0)
         return 0;
-    return (((cal >> 6) & 3U) == 3U) && (sys == 5U);
+    return calib_sys == 3U && sys_status == 5U;
 }
 
 void bno055_diag(void)
@@ -274,7 +289,7 @@ static int bno055_read_internal(int16_t *acc, int16_t *gyr, int16_t *mag, int is
              sample[8] == last_sample[8]))
         {
             if (same_since == 0U) same_since = HAL_GetTick();
-            if (++stale_reads >= 20U || (HAL_GetTick() - same_since > 1000U &&
+            if (++stale_reads >= 20U && (HAL_GetTick() - same_since > 1000U &&
                 sample[0] == 0 && sample[1] == 0 && sample[2] == 0 &&
                 sample[3] == 0 && sample[4] == 0 && sample[5] == 0 &&
                 sample[6] == 0 && sample[7] == 0 && sample[8] == 0)) {

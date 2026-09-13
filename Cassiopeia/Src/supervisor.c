@@ -91,6 +91,12 @@ void supervisor_self_test(void)
             if (modules[i].alarm >= 0)
                 module_alarm_set(modules[i].alarm, modules[i].master);
         }
+        else
+        {
+            modules[i].status = MOD_STATUS_OK;
+            if (modules[i].alarm >= 0)
+                module_alarm_clear(modules[i].alarm, modules[i].master);
+        }
     }
 }
 
@@ -258,14 +264,16 @@ void supervisor_warning_update(void)
     /* --- IMU: kalibrace (sys 3 = plne kalibrovano) --- */
     watchdog_refresh();
     uint8_t csys = 0;
+    uint8_t sys_status = 0;
     int16_t imu_acc[3], imu_gyr[3], imu_mag[3];
     int imu_sample_ok = bno055_read(imu_acc, imu_gyr, imu_mag) == 0;
-    if (bno055_self_test() == 0 &&
-        bno055_calib_status(&csys) == 0 && csys < 3)
+    int imu_status_ok = bno055_self_test() == 0 &&
+                        bno055_flight_status(&csys, &sys_status) == 0;
+    if (!imu_status_ok || csys < 3)
         warning_set(WRN_IMU_CAL);
     else
         warning_clear(WRN_IMU_CAL);
-    int imu_ready = bno055_flight_ready();
+    int imu_ready = imu_status_ok && csys == 3U && sys_status == 5U;
     if (!imu_ready || !imu_sample_ok)
         master_alarm_set(MASTER_IMU);
     else
@@ -352,6 +360,16 @@ void supervisor_warning_update(void)
         warning_set(WRN_SERVO_ERR);
     else
         warning_clear(WRN_SERVO_ERR);
+    if (pca9685_self_test() == 0)
+    {
+        master_alarm_clear(MASTER_SERVO);
+        runtime_status(2, 1);
+    }
+    else
+    {
+        master_alarm_set(MASTER_SERVO);
+        runtime_status(2, 0);
+    }
 
     watchdog_refresh();
     alarm_update_leds();
