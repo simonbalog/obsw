@@ -1,0 +1,207 @@
+LoRa/uplink command reference
+============================
+
+This is the command set accepted by the uplink parser in Cassiopeia/Src/uplink.c.
+Commands are received as text packets over LoRa.  The same parser is also fed
+by the USART command line (serial_command_poll()), so the syntax below applies
+there too.
+
+The LoRa receive buffer is limited to 16 bytes.  A longer received packet is
+truncated to 16 bytes before parsing and will normally be rejected as a bad or
+unknown command.  A command is matched case-insensitively, but replies use the
+canonical uppercase command name.  Exact commands may be followed by spaces,
+tabs, CR, or LF.  Commands with arguments need whitespace after the command
+name.  LoRa replies are sent as plain text; command acknowledgements are
+"ACK:<COMMAND>" and rejected commands are "NAK:<COMMAND>".
+
+Commands
+--------
+
+ABORT
+  Immediately cancels the countdown and flight.  If the flight state is
+  neither IDLE nor LANDED, it deploys the parachute first.  It sets the
+  MASTER_LAUNCH alarm, updates the alarm LEDs, resets the countdown to its
+  default stopped state, and starts a telemetry-buffer dump over LoRa.
+  Reply: ACK:ABORT.
+
+CHUTE
+  Calls the flight parachute-deploy handler.  Reply: ACK:CHUTE.  This command
+  has no additional parser-level state check; the flight handler and hardware
+  safety behavior still apply.
+
+PAUSE
+  Pauses only a running countdown.  If it is not running, the request is
+  ignored by the countdown handler (but the uplink still replies ACK:PAUSE).
+  Reply: ACK:PAUSE.
+
+RESUME
+  Resumes only a countdown previously paused by the remote PAUSE path.  If the
+  countdown is not stopped with the remote-paused flag set, it is ignored
+  (with ACK:RESUME still sent).  Reply: ACK:RESUME.
+
+START
+  Starts only when the countdown is STOPPED and not remotely paused.  Starting
+  leaves test mode, runs the system re-check, and can immediately refuse to
+  run if a master alarm is present, the IMU is not flight-ready, or the
+  ground-pressure check fails.  Reply: ACK:START even when the countdown
+  handler ignores or aborts the start.
+
+TEST
+  Toggles countdown test mode.  Test mode engages/disengages ground
+  stabilization and puts the stabilization servos at neutral.  Reply:
+  ACK:TEST.
+
+ADDMIN
+  Adds one minute to the countdown value.  Reply: ACK:ADDMIN.
+
+STAT
+  Sends the normal status report over LoRa, then acknowledges the command.
+  Reply: a status report followed by ACK:STAT.
+
+IMUCAL
+  Starts BNO055 ground calibration without saving calibration across reset.
+  Accepted only when flight_state() is FLIGHT_IDLE and the BNO055 is
+  available.  Otherwise reply: NAK:IMUCAL.  Success reply: ACK:IMUCAL.
+
+PREFLIGHT
+  Sends the preflight report over LoRa.  Reply: the report followed by
+  ACK:PREFLIGHT.
+
+PING
+  Connection test.  Reply: PONG (not ACK:PING).
+
+LEDS <a> <b> <c>
+  Sets the three LEDs; each numeric value is mapped to 0 when it is zero and
+  to 1 for any nonzero value.  Reply: ACK:LEDS, or NAK:LEDS for missing
+  values or trailing non-space data.  The argument separators and trailing
+  whitespace in this handler are literal spaces; tabs/CR/LF are not accepted
+  between values or after the last value.
+  Example: LEDS 1 0 1
+
+NEUTRAL
+  Sets the four stabilization PCA9685 servo channels to 0 degrees.  Reply:
+  ACK:NEUTRAL.
+
+SOFF
+  Disengages stabilization, stops single-channel stabilization testing,
+  releases every servo output (no holding pulse), and replies ACK:SOFF.
+
+SON
+  Commands every servo channel to hold 0 degrees.  Reply: ACK:SON.
+
+STABT [<ch>]
+  Ground stabilization test for one stabilization servo channel, where <ch>
+  is 0 through 3.  With no argument, or by repeating the currently active
+  channel, the test is stopped and all stabilization servos return to
+  neutral.  A different valid channel starts the test on that channel.
+  Reply: ACK:STABT, or NAK:STABT for a missing/invalid numeric channel.
+  The argument parser accepts the digits at the beginning and does not reject
+  extra trailing characters after them.
+  Examples: STABT 2, STABT
+
+GYROON
+  Enables the live orientation stream over LoRa (Y;... every 500 ms).
+  Reply: ACK:GYROON.
+
+GYROOFF
+  Disables the live orientation stream.  Reply: ACK:GYROOFF.
+
+GZERO
+  Re-zeroes the gyroscope bias and the "up" reference from the current
+  orientation.  The vehicle should be motionless.  Reply: ACK:GZERO.
+
+DUMP
+  Starts sending the complete telemetry buffer from RAM over LoRa.
+  Reply: ACK:DUMP.
+
+CLEANRAM
+  Clears the RAM telemetry buffer.  Reply: ACK:CLEANRAM.
+
+BUF
+  Reports the RAM telemetry buffer as
+  BUF:<records>;fill=<percent>%;ev=<evicted-records>
+  (there is no ACK reply).
+
+LOGS
+  Reports the active log and sizes/existence of LOG.TXT and LOG1.TXT through
+  LOG3.TXT as
+  LOGS:akt=<active>;L0=<size-or->;L1=<size-or->;L2=<size-or->;L3=<size-or->
+  (there is no ACK reply).
+
+LOGDEL <n>
+  Deletes a backup log, where <n> is 1, 2, or 3.  Whitespace around the
+  unsigned decimal argument may be spaces, tabs, CR, or LF.  Reply:
+  ACK:LOGDEL on success, otherwise NAK:LOGDEL.
+  Example: LOGDEL 2
+
+LOGSEL <n>
+  Selects the log destination, where <n> is 0 (LOG.TXT) through 3 (LOG3.TXT).
+  Whitespace around the unsigned decimal argument may be spaces, tabs, CR, or
+  LF.  Reply: ACK:LOGSEL on success, otherwise NAK:LOGSEL.
+  Example: LOGSEL 0
+
+POWER
+  Reports measured voltages as PWR:<battery-mV>;5V=<5V-mV>.  A failed reading
+  is reported as zero.  There is no ACK reply.
+
+ALARMS
+  Reports alarm counts as ALM:<alarm-count>;master=<master-alarm-count>.
+  There is no ACK reply.
+
+RTC
+  Reports the RTC as RTC:<year>-<month>-<day> <hour>:<minute>:<second>, or
+  RTC:NA when the RTC read fails.  There is no ACK reply.
+
+GPS
+  Reports the integer latitude and longitude as GPS:<lat>;<lon>, or GPS:NOFIX
+  when no position is available.  There is no ACK reply.
+
+SETTIME <y> <mo> <d> <h> <mi> <s>
+  Sets the RTC and marks the time as manually synchronized so GPS automatic
+  synchronization does not overwrite it.  Values must be year 2020-2099,
+  month 1-12, day 1-31, hour 0-23, minute 0-59, and second 0-59.  UTC must
+  be supplied.  Reply: ACK:SETTIME on success, otherwise NAK:SETTIME.
+  The implementation requires literal spaces between fields and does not
+  validate characters after the sixth value.  A complete valid SETTIME
+  command cannot fit in the 16-byte uplink buffer, so this command is
+  recognized but cannot succeed through the current LoRa/USART uplink path.
+
+MODULES
+  Reports module health as
+  MOD:bme280=O/F;bno055=O/F;pca9685=O/F;lora=O/F;power=O/F;gps=O/F;rtc=O/F.
+  There is no ACK reply.
+
+VER
+  Reports the firmware version as VER:0.9.2.  There is no ACK reply.
+
+REBOOT
+  Acknowledges and resets the MCU only when the countdown is STOPPED and the
+  flight state is FLIGHT_IDLE or FLIGHT_PRE_LAUNCH.  Otherwise it replies
+  NAK:REBOOT and does not reset.  On success it sends ACK:REBOOT, waits
+  300 ms for the reply, and resets.
+
+SERVO <ch> <deg>
+  Sets one PCA9685 servo channel, where <ch> is 0 through 4 and <deg> is
+  -90 through 90 degrees.  Both plus and minus signs are accepted.  Reply:
+  ACK:SERVO on valid input, otherwise NAK:SERVO.
+  Example: SERVO 2 -15
+
+Safety and parser limitations
+-----------------------------
+
+These commands do not bypass safety logic.  MASTER alarms, flight-state
+restrictions, calibration/readiness checks, and countdown-state restrictions
+remain active.  In particular, START still performs its master-alarm,
+flight-ready, and pressure checks; IMUCAL still requires FLIGHT_IDLE and an
+available BNO055; REBOOT still requires an inactive countdown and an allowed
+flight state; and ABORT still records MASTER_LAUNCH.  There is no FORCE
+command and no bypass command.
+
+The dispatcher checks commands in a fixed order and accepts only the listed
+names.  Unknown input receives NAK:UNKNOWN.  Exact command matching is
+case-insensitive and strips only trailing spaces, tabs, CR, and LF.  The
+LoRa path polls every 100 ms and uses a 5 ms receive wait; the radio remains
+in continuous receive mode between polls.  The USART line editor accepts
+printable ASCII, ends a command on CR or LF, ignores empty lines, and supports
+backspace and DEL.  Its input line is truncated to the same 16-byte parser
+limit when delivered to uplink.
