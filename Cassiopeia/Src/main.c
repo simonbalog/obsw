@@ -32,7 +32,6 @@ int main(void)
     uint32_t rst_cause = RCC->RSR;
 
     HAL_Init();
-    watchdog_init();
     SystemClock_Config();
     MX_GPIO_Init();
     MX_I2C1_Init();
@@ -83,6 +82,9 @@ int main(void)
     uplink_init();
     status_report_init();
 
+    /* Start the runtime watchdog only after bounded boot/storage init has
+       completed; boot diagnostics must not be reset by a missing SD card. */
+    watchdog_init();
     alarm_update_leds();
 
     for (;;)

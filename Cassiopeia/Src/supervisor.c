@@ -15,6 +15,7 @@
 #include "rtc.h"
 #include "stm32h7xx_hal.h"
 #include "status_report.h"
+#include "watchdog.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -182,6 +183,7 @@ void supervisor_warning_update(void)
     (void)now;
 
     /* --- GPS: fix --- */
+    watchdog_refresh();
     if (gps_self_test() == 0)
     {
         if (!gps_valid_fix() && (now - warn_boot_tick) > WRN_GPS_NOFIX_MS)
@@ -234,6 +236,7 @@ void supervisor_warning_update(void)
     }
 
     /* --- RTC: platnost casu --- */
+    watchdog_refresh();
     uint16_t y;
     uint8_t mo, d, h, mi, s;
     if (rtc_self_test() == 0 && rtc_get_datetime(&y, &mo, &d, &h, &mi, &s) != 0)
@@ -242,6 +245,7 @@ void supervisor_warning_update(void)
         warning_clear(WRN_RTC_INVALID);
 
     /* --- IMU: kalibrace (sys 3 = plne kalibrovano) --- */
+    watchdog_refresh();
     uint8_t csys = 0;
     if (bno055_self_test() == 0 &&
         bno055_calib_status(&csys) == 0 && csys < 3)
@@ -254,6 +258,7 @@ void supervisor_warning_update(void)
         master_alarm_clear(MASTER_IMU);
 
     /* --- baterie: warning pod 7.2 V, master alarm pod 6.6 V --- */
+    watchdog_refresh();
     uint16_t mv = 0;
     if (power_read_battery_mv(&mv) == 0 && mv > 0)
     {
@@ -269,6 +274,7 @@ void supervisor_warning_update(void)
     }
 
     /* --- teplota --- */
+    watchdog_refresh();
     float t = 0, hh = 0, p = 0;
     if (bme280_read(&t, &hh, &p) == 0)
     {
@@ -281,6 +287,7 @@ void supervisor_warning_update(void)
         master_alarm_set(MASTER_BME280);
 
     /* --- LoRa TX: rostouci pocet failu = warning --- */
+    watchdog_refresh();
     unsigned int fail = lora_tx_fail();
     if (fail > lora_fail_prev)
     {
@@ -293,6 +300,7 @@ void supervisor_warning_update(void)
         warning_clear(WRN_LORA_TX);
 
     /* --- SD: retry nebo FAT2 fallback = warning --- */
+    watchdog_refresh();
     unsigned int retries = sd_spi_retry_count() + fatfs_fat2_fallback_count() + logger_fail_count();
     if (retries > sd_retry_prev)
     {
@@ -305,6 +313,7 @@ void supervisor_warning_update(void)
         warning_clear(WRN_SD_RETRY);
 
     /* --- serva: chybne zapisy polohy = warning --- */
+    watchdog_refresh();
     unsigned int sf = pca9685_write_fail_count();
     if (sf > servo_fail_prev)
     {
@@ -316,5 +325,6 @@ void supervisor_warning_update(void)
     else
         warning_clear(WRN_SERVO_ERR);
 
+    watchdog_refresh();
     alarm_update_leds();
 }
