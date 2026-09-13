@@ -263,17 +263,19 @@ void supervisor_warning_update(void)
 
     /* --- IMU: kalibrace (sys 3 = plne kalibrovano) --- */
     watchdog_refresh();
-    uint8_t csys = 0;
+    uint8_t csys = 0, cgyr = 0, cacc = 0, cmag = 0;
     uint8_t sys_status = 0;
     int16_t imu_acc[3], imu_gyr[3], imu_mag[3];
     int imu_sample_ok = bno055_read(imu_acc, imu_gyr, imu_mag) == 0;
     int imu_status_ok = bno055_self_test() == 0 &&
-                        bno055_flight_status(&csys, &sys_status) == 0;
-    if (!imu_status_ok || csys < 3)
+                        bno055_flight_status_full(&csys, &cgyr, &cacc, &cmag,
+                                                  &sys_status) == 0;
+    if (!imu_status_ok || csys < 3 || cgyr < 3 || cacc < 3 || cmag < 3)
         warning_set(WRN_IMU_CAL);
     else
         warning_clear(WRN_IMU_CAL);
-    int imu_ready = imu_status_ok && csys == 3U && sys_status == 5U;
+    int imu_ready = imu_status_ok && csys == 3U && cgyr == 3U &&
+                    cacc == 3U && cmag == 3U && sys_status == 5U;
     if (!imu_ready || !imu_sample_ok)
         master_alarm_set(MASTER_IMU);
     else

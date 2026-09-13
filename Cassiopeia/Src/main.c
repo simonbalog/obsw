@@ -96,6 +96,7 @@ int main(void)
         gps_update();
         telemetry_update();
         orientation_update();
+        bno055_calibration_update();
         /* stabilization_update() bezi v TIM6 preruseni (50 Hz, priorita) */
         uplink_update();
         status_report_update();

@@ -12,7 +12,14 @@ int bno055_read_isr(int16_t *acc, int16_t *gyr, int16_t *mag);  /* kratky I2C ti
 void bno055_diag(void);
 int bno055_calib_status(uint8_t *sys);  /* sys = 0..3 (3 = plne kalibrovano) */
 int bno055_flight_status(uint8_t *calib_sys, uint8_t *sys_status);
+int bno055_flight_status_full(uint8_t *calib_sys, uint8_t *calib_gyr,
+                              uint8_t *calib_acc, uint8_t *calib_mag,
+                              uint8_t *sys_status);
 int bno055_flight_ready(void);
+int bno055_calibration_begin(void);
+void bno055_calibration_update(void);
+int bno055_calibration_active(void);
+int bno055_calibration_state(void); /* 0=idle, 1=active, 2=complete, -1=failed */
 
 /* Gyro bias (auto-kalibrace pri kazdem bootu, viz orientation.c).
    bno055_read / bno055_read_isr jej automaticky odecitaji. */

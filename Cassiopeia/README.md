@@ -29,6 +29,23 @@ FLIGHT=<code> CALIBRATION=<code> ALARMS=<code>`. Kód `0` znamená úspěch, chy
 stabilní rozsah 401–411 a celkový FAIL 400. Kontrola je pouze diagnostická:
 nečistí alarmy, nemění stav letu ani neobchází safety.
 
+## BNO055 ground calibration
+
+`STAT` reports `imu_cal=SYS,GYR,ACC,MAG`, `imu_sys=<SYS_STATUS>` and
+`imu_ready=1|0`; all four calibration components must be `3` and
+`imu_sys` must be `5` before `MASTER_IMU` clears. `orientation.c`'s short
+gravity/gyro reference calibration is separate and does not satisfy this
+requirement.
+
+After a cold boot, keep the vehicle still and level, then send `IMUCAL` over
+USART3 or LoRa. Follow the BNO055 ground procedure by holding still first and
+then moving the sensor through all required axes until `STAT` reports
+`imu_cal=3,3,3,3 imu_sys=5 imu_ready=1`. The monitor times out after three
+minutes and never accepts partial calibration. BNO055 offsets are volatile;
+this firmware has no safe nonvolatile calibration store, so repeat the
+procedure after a power cycle or reset that loses the sensor state. Launch
+remains blocked while any component is incomplete or status is not `5`.
+
 ## Release hardening limitations
 
 Boot remains in `FLIGHT_IDLE`; flight control and liftoff acceptance require

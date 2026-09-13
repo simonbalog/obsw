@@ -15,6 +15,7 @@
 #include "fatfs.h"
 #include "orientation.h"
 #include "preflight.h"
+#include "bno055.h"
 #include "stm32h7xx_hal.h"
 #include <string.h>
 
@@ -41,6 +42,7 @@
  *    GYROOFF - vypnout gyro stream (vychozi stav je OFF)
  *    GZERO   - prekalibrovat gyro/bias a referenci "nahoru" za behu
  *    STAT    - okamzite odeslat status report pres LoRa
+ *    IMUCAL  - spustit pozemni dohled kalibrace BNO055 (bez ulozeni po resetu)
  *    PING    - odpoved PONG (kontrola spojeni)
  *    LEDS <a> <b> <c>  - rozsvitit/zhasnout LED (0/1) - zemnni test
  *    NEUTRAL - vsechna serva do neutralu (0 deg)
@@ -167,6 +169,24 @@ static void uplink_stat(void)
     serial_puts("uplink: STAT received\r\n");
     status_report_send_lora();
     uplink_ack("STAT");
+}
+
+static void uplink_imucal(void)
+{
+    serial_puts("uplink: IMUCAL received\r\n");
+    if (flight_state() != FLIGHT_IDLE)
+    {
+        serial_puts("uplink: IMUCAL rejected: flight not idle\r\n");
+        uplink_nak("IMUCAL");
+        return;
+    }
+    if (bno055_calibration_begin() != 0)
+    {
+        serial_puts("uplink: IMUCAL rejected: BNO055 unavailable\r\n");
+        uplink_nak("IMUCAL");
+        return;
+    }
+    uplink_ack("IMUCAL");
 }
 
 static void uplink_ping(void)
@@ -785,6 +805,8 @@ static void uplink_handle(const uint8_t *data, uint8_t len)
         uplink_addmin();
     else if (cmd_matches(data, len, "STAT"))
         uplink_stat();
+    else if (cmd_matches(data, len, "IMUCAL"))
+        uplink_imucal();
     else if (cmd_matches(data, len, "PREFLIGHT"))
     {
         serial_puts("uplink: PREFLIGHT received\r\n");

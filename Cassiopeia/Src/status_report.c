@@ -104,14 +104,14 @@ static void status_build_line(void)
     float press = 0.0f, ground = 0.0f;
     int16_t gyr[3] = {0};
     orientation_t orient = {0};
-    uint8_t imu_cal = 0, imu_sys = 0;
+    uint8_t imu_sys = 0, imu_gyr = 0, imu_acc = 0, imu_mag = 0, imu_status = 0;
     unsigned int pos = 0, i;
     uint16_t batt = 0, v5 = 0;
 
     (void)bme280_read(0, 0, &press);
     (void)bme280_ground_pressure(&ground);
     (void)bno055_read(0, gyr, 0);
-    (void)bno055_flight_status(&imu_cal, &imu_sys);
+    (void)bno055_flight_status_full(&imu_sys, &imu_gyr, &imu_acc, &imu_mag, &imu_status);
     (void)orientation_sample(&orient);
     (void)power_read_battery_mv(&batt);
     (void)power_read_5v_mv(&v5);
@@ -139,8 +139,12 @@ static void status_build_line(void)
     else if (orient.dir == 'U') puts_bounded(&pos, "UP");
     else if (orient.dir == 'D') puts_bounded(&pos, "DOWN");
     else { uint_bounded(&pos, (unsigned int)orient.clock_h); puts_bounded(&pos, "H/"); uint_bounded(&pos, (unsigned int)orient.miss_deg); puts_bounded(&pos, "deg"); }
-    puts_bounded(&pos, " imu_cal="); uint_bounded(&pos, imu_cal);
-    puts_bounded(&pos, " imu_sys="); uint_bounded(&pos, imu_sys);
+    puts_bounded(&pos, " imu_cal="); uint_bounded(&pos, imu_sys);
+    putc_bounded(&pos, ','); uint_bounded(&pos, imu_gyr);
+    putc_bounded(&pos, ','); uint_bounded(&pos, imu_acc);
+    putc_bounded(&pos, ','); uint_bounded(&pos, imu_mag);
+    puts_bounded(&pos, " imu_sys="); uint_bounded(&pos, imu_status);
+    puts_bounded(&pos, " imu_ready="); uint_bounded(&pos, (unsigned int)bno055_flight_ready());
     puts_bounded(&pos, " stab=");
     for (i = 0; i < 4; i++) {
         int16_t deg = 0;

@@ -25,8 +25,12 @@
 #define BNO055_SYS_STATUS      0x39
 #define BNO055_SYS_ERR         0x3A
 #define BNO055_ACC_DATA_START  0x08
+#define BNO055_CALIBRATION_TIMEOUT_MS 180000U
 
 static int present = 0;
+static int calibration_state;
+static uint32_t calibration_start;
+static uint32_t calibration_next_poll;
 
 /* gyro bias - nuluje se pri kazdem bootu (orientation.c) a odecita
    z kazdeho cteni gyroskopu, i z ISR stabilizace */
@@ -48,49 +52,66 @@ static void print_hex_byte(uint8_t v)
 
 int bno055_init(void)
 {
+    present = 0;
+    calibration_state = 0;
+    calibration_start = 0;
+    calibration_next_poll = 0;
+    gyr_bias[0] = gyr_bias[1] = gyr_bias[2] = 0;
+    gyr_calib = 0;
     same_since = 0;
     stale_reads = 0;
     read_failures = 0;
     for (unsigned int i = 0; i < 9U; i++)
         last_sample[i] = 0;
-    /* software reset (RST_SYS) - po power-on je treba senzor spravne
-       nastartovat, jinak nemusi bezet vsechny senzory */
-    uint8_t v = 0x20;
-    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_SYS_TRIGGER, &v, 1) != 0)
-        return -1;
-    HAL_Delay(650); /* datasheet: ~650 ms po resetu */
-
     uint8_t id = 0;
-    if (bus_i2c_read_reg(BNO055_ADDR, BNO055_CHIP_ID_REG, &id, 1) != 0)
-        return -1;
+    if (bus_i2c_read_reg(BNO055_ADDR, BNO055_CHIP_ID_REG, &id, 1) != 0 ||
+        id != BNO055_CHIP_ID)
+    {
+        /* Recovery is only used when the device does not answer. A reset on
+           every boot would discard the volatile BNO055 fusion calibration. */
+        uint8_t reset = 0x20;
+        if (bus_i2c_write_reg(BNO055_ADDR, BNO055_SYS_TRIGGER, &reset, 1) != 0)
+            return -1;
+        HAL_Delay(650);
+        if (bus_i2c_read_reg(BNO055_ADDR, BNO055_CHIP_ID_REG, &id, 1) != 0)
+            return -1;
+    }
     if (id != BNO055_CHIP_ID)
         return -1;
 
-    /* prechod do CONFIG modu pro zapis konfigurace */
-    v = BNO055_OPR_MODE_CONFIG;
-    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_OPR_MODE, &v, 1) != 0)
+    /* Do not switch an already-running fusion engine through CONFIG mode:
+       that would discard the calibration accumulated before a warm reset. */
+    uint8_t v = 0;
+    uint8_t mode = 0;
+    if (bus_i2c_read_reg(BNO055_ADDR, BNO055_OPR_MODE, &mode, 1) != 0)
         return -1;
+    if (mode != BNO055_OPR_MODE_NDOF)
+    {
+        v = BNO055_OPR_MODE_CONFIG;
+        if (bus_i2c_write_reg(BNO055_ADDR, BNO055_OPR_MODE, &v, 1) != 0)
+            return -1;
 
-    v = 0x00; /* page 0 */
-    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_PAGE_ID, &v, 1) != 0)
-        return -1;
+        v = 0x00; /* page 0 */
+        if (bus_i2c_write_reg(BNO055_ADDR, BNO055_PAGE_ID, &v, 1) != 0)
+            return -1;
 
-    v = 0x01; /* UNIT_SEL bits1:0 = 01 -> acceleration v mg (1000 = 1 g),
-                 angular rate dps, temp degC. Puvodni 0x00 by byl m/s^2. */
-    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_UNIT_SEL, &v, 1) != 0)
-        return -1;
+        v = 0x01; /* UNIT_SEL bits1:0 = 01 -> acceleration v mg (1000 = 1 g),
+                     angular rate dps, temp degC. Puvodni 0x00 by byl m/s^2. */
+        if (bus_i2c_write_reg(BNO055_ADDR, BNO055_UNIT_SEL, &v, 1) != 0)
+            return -1;
 
-    v = 0x00; /* normal power mode */
-    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_PWR_MODE, &v, 1) != 0)
-        return -1;
+        v = 0x00; /* normal power mode */
+        if (bus_i2c_write_reg(BNO055_ADDR, BNO055_PWR_MODE, &v, 1) != 0)
+            return -1;
 
-    v = BNO055_OPR_MODE_NDOF; /* fusion mode */
-    if (bus_i2c_write_reg(BNO055_ADDR, BNO055_OPR_MODE, &v, 1) != 0)
-        return -1;
+        v = BNO055_OPR_MODE_NDOF; /* fusion mode */
+        if (bus_i2c_write_reg(BNO055_ADDR, BNO055_OPR_MODE, &v, 1) != 0)
+            return -1;
 
-    /* senzor potrebuje cas na prepnuti modu, jinak jsou prvni data
-       nestabilni/stara */
-    HAL_Delay(100);
+        /* senzor potrebuje cas na prepnuti modu, jinak jsou prvni data
+           nestabilni/stara */
+        HAL_Delay(100);
+    }
 
     present = 1;
     return 0;
@@ -124,6 +145,13 @@ int bno055_calib_status(uint8_t *sys)
 
 int bno055_flight_status(uint8_t *calib_sys, uint8_t *sys_status)
 {
+    return bno055_flight_status_full(calib_sys, 0, 0, 0, sys_status);
+}
+
+int bno055_flight_status_full(uint8_t *calib_sys, uint8_t *calib_gyr,
+                              uint8_t *calib_acc, uint8_t *calib_mag,
+                              uint8_t *sys_status)
+{
     uint8_t cal = 0;
     uint8_t status = 0;
 
@@ -134,6 +162,12 @@ int bno055_flight_status(uint8_t *calib_sys, uint8_t *sys_status)
 
     if (calib_sys)
         *calib_sys = (uint8_t)((cal >> 6) & 3U);
+    if (calib_gyr)
+        *calib_gyr = (uint8_t)((cal >> 4) & 3U);
+    if (calib_acc)
+        *calib_acc = (uint8_t)((cal >> 2) & 3U);
+    if (calib_mag)
+        *calib_mag = (uint8_t)(cal & 3U);
     if (sys_status)
         *sys_status = status;
     return 0;
@@ -141,12 +175,55 @@ int bno055_flight_status(uint8_t *calib_sys, uint8_t *sys_status)
 
 int bno055_flight_ready(void)
 {
-    uint8_t calib_sys = 0;
+    uint8_t calib_sys = 0, calib_gyr = 0, calib_acc = 0, calib_mag = 0;
     uint8_t sys_status = 0;
-    if (bno055_flight_status(&calib_sys, &sys_status) != 0)
+    if (bno055_flight_status_full(&calib_sys, &calib_gyr, &calib_acc,
+                                  &calib_mag, &sys_status) != 0)
         return 0;
-    return calib_sys == 3U && sys_status == 5U;
+    return calib_sys == 3U && calib_gyr == 3U && calib_acc == 3U &&
+           calib_mag == 3U && sys_status == 5U;
 }
+
+int bno055_calibration_begin(void)
+{
+    if (!present)
+        return -1;
+    calibration_state = 1;
+    calibration_start = HAL_GetTick();
+    calibration_next_poll = calibration_start;
+    serial_puts("bno055: ground calibration started; keep still, then move through all axes\r\n");
+    return 0;
+}
+
+void bno055_calibration_update(void)
+{
+    uint8_t sys = 0, gyr = 0, acc = 0, mag = 0, status = 0;
+    if (calibration_state != 1)
+        return;
+    if (HAL_GetTick() < calibration_next_poll)
+        return;
+    calibration_next_poll = HAL_GetTick() + 500U;
+    if (bno055_flight_status_full(&sys, &gyr, &acc, &mag, &status) != 0)
+    {
+        calibration_state = -1;
+        serial_puts("bno055: ground calibration failed: status read\r\n");
+        return;
+    }
+    if (sys == 3U && gyr == 3U && acc == 3U && mag == 3U && status == 5U)
+    {
+        calibration_state = 2;
+        serial_puts("bno055: ground calibration complete; offsets are volatile\r\n");
+    }
+    else if ((uint32_t)(HAL_GetTick() - calibration_start) >=
+             BNO055_CALIBRATION_TIMEOUT_MS)
+    {
+        calibration_state = -1;
+        serial_puts("bno055: ground calibration timed out; see STAT imu_cal\r\n");
+    }
+}
+
+int bno055_calibration_active(void) { return calibration_state == 1; }
+int bno055_calibration_state(void) { return calibration_state; }
 
 void bno055_diag(void)
 {
@@ -180,6 +257,15 @@ void bno055_diag(void)
     print_hex_byte(st);
     serial_puts(" (bit2=ACC,bit3=GYR,bit1=MAG; 0x0E=OK) calib=");
     print_hex_byte(cal);
+    serial_puts(" [SYS=");
+    print_unsigned((cal >> 6) & 3U);
+    serial_puts(" GYR=");
+    print_unsigned((cal >> 4) & 3U);
+    serial_puts(" ACC=");
+    print_unsigned((cal >> 2) & 3U);
+    serial_puts(" MAG=");
+    print_unsigned(cal & 3U);
+    serial_puts("]");
     serial_puts(" sys=");
     print_hex_byte(sys);
     serial_puts(" err=");
